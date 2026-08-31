@@ -1,0 +1,211 @@
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from .db import RefDeckDB
+from .indexer import ScanManager
+from .media import MediaRoots, classify_media
+from .mounts import MountError, MountManager
+from .thumbs import make_preview, make_thumb, needs_conversion
+
+
+class CollectionIn(BaseModel):
+    title: str
+
+
+class CollectionItemIn(BaseModel):
+    path: str
+    media_type: str
+
+
+class BoardIn(BaseModel):
+    id: int | None = None
+    title: str
+    document: dict
+
+
+class MountIn(BaseModel):
+    name: str
+    server: str
+    share: str
+    subpath: str = ""
+    username: str = ""
+    password: str = ""
+
+
+def parse_roots() -> dict[str, Path]:
+    raw = os.environ.get("REFDECK_ROOTS", "")
+    roots = {}
+    for part in raw.split(";"):
+        if not part.strip():
+            continue
+        name, path = part.split("=", 1)
+        roots[name.strip()] = Path(path)
+    return roots
+
+
+def data_dir() -> Path:
+    return Path(os.environ.get("REFDECK_DATA_DIR", str(Path.cwd() / "data")))
+
+
+def create_app(mount_runner=None) -> FastAPI:
+    app = FastAPI(title="RefDeck")
+    roots = MediaRoots(parse_roots())
+    data = data_dir()
+    cache = data / "thumbs"
+    db = RefDeckDB(data / "refdeck.db")
+    db.init([(s["name"], s["path"]) for s in roots.status()])
+    scanner = ScanManager(roots, db, thumb_fn=lambda p: make_thumb(p, cache))
+    mount_base = Path(os.environ.get("REFDECK_MOUNT_BASE", "/mnt/refdeck"))
+    mounts = MountManager(db, roots, scanner, base=mount_base,
+                          runner=mount_runner or subprocess.run)
+
+    app.state.roots = roots
+    app.state.db = db
+    app.state.cache = cache
+    app.state.scanner = scanner
+    app.state.mounts = mounts
+
+    @app.on_event("startup")
+    def startup():
+        mounts.restore_all()
+        scanner.start_all()
+
+    @app.get("/api/roots")
+    def api_roots():
+        return [s | {"media_count": db.media_count(s["name"])} for s in roots.status()]
+
+    @app.get("/api/browse")
+    def api_browse(root: str = Query(...), path: str = ""):
+        try:
+            listing = roots.list_dirs(root, path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        listing["media_count"] = db.media_count(root, path)
+        return listing
+
+    @app.get("/api/files")
+    def api_files(root: str, path: str = "", recursive: int = 0, query: str = "",
+                  sort: str = "name", limit: int = 200, offset: int = 0,
+                  type: str = "", exts: str = ""):
+        if root not in roots.roots:
+            raise HTTPException(status_code=400, detail=f"unknown root: {root}")
+        ext_list = [e.strip().lstrip(".").lower() for e in exts.split(",") if e.strip()]
+        return db.query_files(root, dir=path, recursive=bool(recursive), query=query,
+                              sort=sort, limit=min(limit, 500), offset=max(offset, 0),
+                              media_type=type, exts=ext_list)
+
+    @app.post("/api/scan/{root}")
+    def api_scan(root: str):
+        if root not in roots.roots:
+            raise HTTPException(status_code=400, detail=f"unknown root: {root}")
+        return {"started": scanner.start(root)}
+
+    @app.get("/api/scan/status")
+    def api_scan_status():
+        return scanner.status()
+
+    def resolve_file(root: str, path: str) -> Path:
+        try:
+            target = roots.resolve(root, path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail=f"file not found: {path}")
+        return target
+
+    @app.get("/api/media")
+    def api_media(root: str, path: str):
+        return FileResponse(resolve_file(root, path))
+
+    @app.get("/api/thumb")
+    def api_thumb(root: str, path: str):
+        return FileResponse(make_thumb(resolve_file(root, path), cache))
+
+    @app.get("/api/preview")
+    def api_preview(root: str, path: str):
+        target = resolve_file(root, path)
+        if classify_media(target) == "video" or not needs_conversion(target):
+            return FileResponse(target)
+        try:
+            return FileResponse(make_preview(target, cache), media_type="image/jpeg")
+        except Exception as exc:
+            raise HTTPException(status_code=415, detail=f"cannot preview: {exc}") from exc
+
+    @app.get("/api/mounts")
+    def api_mounts():
+        return mounts.listing()
+
+    @app.post("/api/mounts")
+    def api_add_mount(payload: MountIn):
+        try:
+            return mounts.add(payload.name.strip(), payload.server.strip(), payload.share.strip(),
+                              payload.subpath.strip(), payload.username, payload.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except MountError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.delete("/api/mounts/{mount_id}")
+    def api_remove_mount(mount_id: int):
+        try:
+            mounts.remove(mount_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="mount not found") from exc
+        return {"ok": True}
+
+    @app.get("/api/collections")
+    def api_collections():
+        return db.collections()
+
+    @app.post("/api/collections")
+    def api_create_collection(payload: CollectionIn):
+        return db.create_collection(payload.title.strip() or "Untitled")
+
+    @app.delete("/api/collections/{collection_id}")
+    def api_delete_collection(collection_id: int):
+        db.delete_collection(collection_id)
+        return {"ok": True}
+
+    @app.post("/api/collections/{collection_id}/items")
+    def api_add_collection_item(collection_id: int, payload: CollectionItemIn):
+        return db.add_collection_item(collection_id, payload.path, payload.media_type)
+
+    @app.delete("/api/collections/items/{item_id}")
+    def api_remove_collection_item(item_id: int):
+        db.remove_collection_item(item_id)
+        return {"ok": True}
+
+    @app.get("/api/boards")
+    def api_boards():
+        return db.boards()
+
+    @app.get("/api/boards/{board_id}")
+    def api_board(board_id: int):
+        try:
+            return db.board(board_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="board not found") from exc
+
+    @app.post("/api/boards")
+    def api_save_board(payload: BoardIn):
+        return db.save_board(payload.id, payload.title.strip() or "Untitled", payload.document)
+
+    @app.delete("/api/boards/{board_id}")
+    def api_delete_board(board_id: int):
+        db.delete_board(board_id)
+        return {"ok": True}
+
+    static = Path(__file__).parent / "static"
+    app.mount("/", StaticFiles(directory=static, html=True), name="static")
+    return app
+
+
+app = create_app()

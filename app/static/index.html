@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RefDeck</title>
+  <link rel="stylesheet" href="/style.css?v=12" />
+</head>
+<body>
+  <header>
+    <div class="hgroup">
+      <button id="toggleSidebar" class="ghost icon" title="Sidebar (F)">◧</button>
+      <span id="wordmark">REF<i>/</i>DECK</span>
+    </div>
+    <span id="status">ready</span>
+    <div class="hgroup">
+      <div class="seg">
+        <button id="modeExplorer" title="Explorer only (E)">Explore</button>
+        <button id="modeSplit" title="Split view (Esc)">Split</button>
+        <button id="modeCanvas" title="Canvas only (C)">Canvas</button>
+      </div>
+      <span class="vr"></span>
+      <button id="newCollection" class="ghost">+ Collection</button>
+      <button id="newBoard" class="ghost">+ Board</button>
+      <button id="saveBoard" class="ghost" title="Save board (⌘S)">Save</button>
+      <span class="vr"></span>
+      <button id="zenToggle" class="ghost icon" title="Zen mode (Z)">◎</button>
+      <button id="openSettings" class="ghost icon" title="Settings">⚙</button>
+    </div>
+  </header>
+  <div id="edgeTop"></div>
+  <div id="edgeLeft"></div>
+  <main>
+    <aside id="folders">
+      <h3>Folders</h3>
+      <select id="rootSelect"></select>
+      <button id="upButton">Up</button>
+      <div id="pathLabel"></div>
+      <div id="dirList"></div>
+      <h3>Filter</h3>
+      <div class="seg" id="typeSeg">
+        <button data-type="">All</button>
+        <button data-type="image">Images</button>
+        <button data-type="video">Videos</button>
+      </div>
+      <div id="extFilters"></div>
+      <h3>Collections</h3>
+      <div id="collections"></div>
+      <div id="collectionDetail"></div>
+      <div class="boardsSection">
+        <h3>Boards</h3>
+        <div id="boards"></div>
+      </div>
+    </aside>
+    <section id="browser">
+      <div id="browserToolbar">
+        <button id="drillToggle" title="Show all media under this folder">Drill down</button>
+        <span id="viewSwitch">
+          <button id="viewMasonry" title="Masonry gallery">▦</button>
+          <button id="viewGrid" title="Cards">▤</button>
+          <button id="viewList" title="File list">☰</button>
+        </span>
+        <input id="searchBox" placeholder="Search…" />
+        <select id="sortSelect">
+          <option value="name">Name</option>
+          <option value="date">Newest</option>
+          <option value="type">Type</option>
+          <option value="size">Size</option>
+        </select>
+        <span id="mediaCount"></span>
+      </div>
+      <div id="gridScroll">
+        <div id="grid"></div>
+        <div id="gridHint" class="hint" hidden></div>
+        <div id="gridSentinel"></div>
+      </div>
+    </section>
+    <section id="boardPanel">
+      <div id="boardToolbar">
+        <input id="boardTitle" placeholder="Board title" />
+        <button id="addNote" class="ghost" title="Add note (N)">+ Note</button>
+        <span class="vr"></span>
+        <div class="seg" id="alignSeg">
+          <button data-align="left" title="Align left edges">⇤</button>
+          <button data-align="centerv" title="Align vertical centers">↔</button>
+          <button data-align="right" title="Align right edges">⇥</button>
+          <button data-align="top" title="Align top edges">⤒</button>
+          <button data-align="centerh" title="Align horizontal centers">↕</button>
+          <button data-align="bottom" title="Align bottom edges">⤓</button>
+        </div>
+        <span class="vr"></span>
+        <button id="zoomOut" class="ghost icon" title="Zoom out">−</button>
+        <button id="zoomReset" class="ghost" title="Reset zoom">100%</button>
+        <button id="zoomIn" class="ghost icon" title="Zoom in">+</button>
+        <span class="vr"></span>
+        <button id="sendBackward" class="ghost icon" title="Send backward [">⤈</button>
+        <button id="bringForward" class="ghost icon" title="Bring forward ]">⤉</button>
+        <button id="deleteBoardItem" class="ghost icon" title="Delete selected (⌫)">✕</button>
+      </div>
+      <div id="boardViewport">
+        <div id="board"></div>
+      </div>
+      <div id="bctx" hidden></div>
+    </section>
+  </main>
+  <div id="ctxMenu" hidden>
+    <button data-ctx="preview">Preview</button>
+    <button data-ctx="board">Add to board</button>
+    <button data-ctx="collect">Add to collection</button>
+    <button data-ctx="original">Open original</button>
+  </div>
+  <dialog id="settings">
+    <button id="closeSettings">Close</button>
+    <h3>Roots</h3>
+    <div id="rootList"></div>
+    <h3>SMB mounts</h3>
+    <div id="mountList"></div>
+    <form id="mountForm">
+      <input name="name" placeholder="Name (e.g. NAS)" required />
+      <input name="server" placeholder="Server (e.g. othermac.local)" required />
+      <input name="share" placeholder="Share (e.g. Art)" required />
+      <input name="subpath" placeholder="Subfolder (optional)" />
+      <input name="username" placeholder="Username (blank = guest)" autocomplete="off" />
+      <input name="password" type="password" placeholder="Password" autocomplete="new-password" />
+      <button type="submit">Mount</button>
+      <div class="hint">Credentials are stored in RefDeck's local data folder on this machine.</div>
+      <div id="mountError" class="hint"></div>
+    </form>
+  </dialog>
+  <dialog id="preview">
+    <div id="previewBody"></div>
+    <aside id="pvDetails" hidden></aside>
+    <div id="pvMenu" hidden>
+      <button data-pv="details">Details <kbd>I</kbd></button>
+      <button data-pv="prev">Previous <kbd>←</kbd></button>
+      <button data-pv="next">Next <kbd>→</kbd></button>
+      <button data-pv="zoomin">Zoom in <kbd>⌃↑ +</kbd></button>
+      <button data-pv="zoomout">Zoom out <kbd>⌃↓ −</kbd></button>
+      <button data-pv="zoomreset">Reset zoom <kbd>0</kbd></button>
+      <button data-pv="board">Add to board</button>
+      <button data-pv="collect">Add to collection</button>
+      <button data-pv="original">Open original</button>
+      <button data-pv="close">Close <kbd>Esc</kbd></button>
+    </div>
+  </dialog>
+  <script src="/app.js?v=12"></script>
+</body>
+</html>
