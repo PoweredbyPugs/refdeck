@@ -10,6 +10,15 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff",
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts", ".m2ts"}
 
 
+def _is_dir(path: Path) -> bool:
+    # Bind mounts can refuse to stat entries (e.g. macOS .TemporaryItems) —
+    # treat anything unstatable as not-a-folder instead of failing the listing.
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def classify_media(path: Path) -> str | None:
     suffix = path.suffix.lower()
     if suffix in IMAGE_EXTS:
@@ -48,6 +57,6 @@ class MediaRoots:
             raise ValueError(f"not a folder: {rel_path}")
         dirs = [{"name": c.name, "path": c.relative_to(self.roots[root]).as_posix()}
                 for c in sorted(target.iterdir(), key=lambda p: p.name.lower())
-                if c.is_dir() and not c.name.startswith(".")]
+                if not c.name.startswith(".") and _is_dir(c)]
         return {"root": root, "path": rel_path, "dirs": dirs}
 

@@ -42,6 +42,25 @@ def test_browse_dirs_only_with_recursive_count(tmp_path, monkeypatch):
     assert client.get("/api/browse", params={"root": "Media", "path": "../"}).status_code == 400
 
 
+def test_browse_tolerates_unstatable_entries(tmp_path, monkeypatch):
+    # Docker bind mounts refuse to stat macOS system dirs like .TemporaryItems —
+    # one bad entry must not 500 the whole listing (it broke the sidebar tree).
+    from pathlib import Path
+    client, media = make_client(tmp_path, monkeypatch)
+    (media / ".TemporaryItems").mkdir()
+    (media / "locked").mkdir()
+    real_is_dir = Path.is_dir
+
+    def guarded(self, **kwargs):
+        if self.name in (".TemporaryItems", "locked"):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", guarded)
+    listing = client.get("/api/browse", params={"root": "Media", "path": ""}).json()
+    assert [d["name"] for d in listing["dirs"]] == ["sub"]
+
+
 def test_files_flat_vs_drill_and_rescan(tmp_path, monkeypatch):
     client, media = make_client(tmp_path, monkeypatch)
     flat = client.get("/api/files", params={"root": "Media"}).json()
