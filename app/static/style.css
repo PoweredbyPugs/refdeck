@@ -66,8 +66,11 @@ h3 { margin: 14px 0 8px; color: var(--ink3); font-family: var(--mono); font-size
 #grid.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 #grid.masonry { display: flex; gap: 10px; align-items: flex-start; }
 .mcol { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.mItem { user-select: none; }
-.mItem img { width: 100%; height: auto; display: block; border-radius: 6px; background: var(--bg2); }
+.mItem { user-select: none; content-visibility: auto; contain-intrinsic-size: auto 240px; }
+/* aspect-ratio auto+fallback: unloaded lazy thumbs get a provisional height so
+   columns never collapse to zero and infinite scroll paginates sanely; once the
+   image loads its intrinsic ratio wins */
+.mItem img { width: 100%; height: auto; aspect-ratio: auto 4/5; display: block; border-radius: 6px; background: var(--bg2); }
 .mItem:hover img { outline: 2px solid var(--ink3); outline-offset: -2px; cursor: pointer; }
 #grid.list { display: flex; flex-direction: column; gap: 1px; }
 .lrow { display: flex; align-items: center; gap: 10px; padding: 4px 8px; border-radius: 6px; font-size: 12px; user-select: none; }
@@ -108,7 +111,21 @@ h3 { margin: 14px 0 8px; color: var(--ink3); font-family: var(--mono); font-size
 .boardItem.media { background: var(--bg2); box-shadow: 0 8px 26px rgba(0,0,0,.4); }
 .boardItem img, .boardItem video { width: 100%; height: 100%; object-fit: fill; display: block; pointer-events: none; user-select: none; }
 .boardItem.selected { outline: 2px solid var(--acc); outline-offset: 0; box-shadow: 0 0 0 4px rgba(226,161,78,.18), 0 8px 26px rgba(0,0,0,.45); }
-.boardItem.note { background: #262013; border: 1px solid #55461f; color: #ecdfbe; padding: 10px 12px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; box-shadow: 0 8px 26px rgba(0,0,0,.4); }
+.boardItem.note { background: #262013; border: 1px solid #55461f; color: #ecdfbe; padding: 10px 12px; font-size: 13px; line-height: 1.45; word-break: break-word; box-shadow: 0 8px 26px rgba(0,0,0,.4); overflow: auto; }
+.boardItem.note h1, .boardItem.note h2, .boardItem.note h3 { font-family: var(--sans); text-transform: none; letter-spacing: 0; color: #f5ecd6; margin: 2px 0 6px; line-height: 1.25; }
+.boardItem.note h1 { font-size: 17px; font-weight: 700; }
+.boardItem.note h2 { font-size: 15px; font-weight: 650; }
+.boardItem.note h3 { font-size: 13.5px; font-weight: 600; }
+.boardItem.note p { margin: 0 0 5px; }
+.boardItem.note code { background: rgba(0,0,0,.35); padding: 1px 4px; border-radius: 4px; font-family: var(--mono); font-size: 11px; }
+.boardItem.note pre { background: rgba(0,0,0,.35); padding: 8px 10px; border-radius: 6px; overflow: auto; margin: 0 0 6px; white-space: pre; }
+.boardItem.note pre code { background: none; padding: 0; }
+.boardItem.note ul, .boardItem.note ol { margin: 0 0 6px; padding-left: 18px; }
+.boardItem.note li { margin: 1px 0; }
+.boardItem.note blockquote { margin: 0 0 6px; padding-left: 8px; border-left: 2px solid #6d5a28; color: #cfc19b; }
+.boardItem.note a { color: var(--acc); }
+.boardItem.note hr { border: none; border-top: 1px solid #55461f; margin: 6px 0; }
+.boardItem.note .mdgap { height: 5px; }
 .boardItem .rsz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; opacity: 0; }
 .boardItem .rsz::after { content: ""; position: absolute; right: 3px; bottom: 3px; width: 8px; height: 8px; border-right: 2px solid var(--acc); border-bottom: 2px solid var(--acc); }
 .boardItem:hover .rsz, .boardItem.selected .rsz { opacity: 1; }
@@ -134,14 +151,29 @@ dialog::backdrop { background: rgba(0,0,0,.72); }
 #mountForm input { background: var(--bg2); }
 #mountError { color: var(--danger); }
 .row .mini { font-size: 10px; padding: 2px 6px; float: right; }
+.hotkeys { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 18px; }
+.hkGroup { grid-column: 1 / -1; font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .14em; color: var(--ink3); margin: 10px 0 4px; }
+.hkGroup:first-child { margin-top: 2px; }
+.hkRow { display: flex; align-items: baseline; gap: 10px; font-size: 12px; color: var(--ink2); padding: 2px 0; }
+.hkRow > kbd { font-family: var(--mono); font-size: 10.5px; color: var(--acc); background: var(--bg1); border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; white-space: nowrap; flex: none; min-width: 46px; text-align: center; }
+.hkRow span kbd { font-family: var(--mono); font-size: 10px; color: var(--ink); background: none; }
 
 /* ---------- preview: media only ---------- */
 #preview { width: 100vw; height: 100vh; max-width: 100vw; max-height: 100vh; border: none; border-radius: 0; padding: 0; background: #050608; }
 #preview::backdrop { background: #000; }
-#previewBody { width: 100%; height: 100%; display: grid; place-items: center; overflow: hidden; }
-#previewBody img, #previewBody video { max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center center; }
-#previewBody.zoomed { cursor: grab; }
+#previewBody { position: relative; width: 100%; height: 100%; overflow: hidden; }
+/* explicit fit-to-screen: absolutely positioned inset-0 box = exactly the
+   viewport, media letterboxed inside via object-fit — small images scale UP,
+   large images scale DOWN, nothing is ever cropped at 100% zoom.
+   (A grid/percentage approach silently overflowed: % height cannot resolve
+   against auto grid tracks, so the element grew to intrinsic height and was
+   clipped.) Zoom (⌃↑/⌃↓) and pan transform on top of this fitted base. */
+#previewBody img, #previewBody video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform-origin: center center; }
+#previewBody { cursor: grab; }
 #previewBody.panning { cursor: grabbing; }
+#pvDepth { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform-origin: center center; pointer-events: none; }
+#pvDivider { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--acc); cursor: ew-resize; z-index: 6; box-shadow: 0 0 10px rgba(0,0,0,.6); }
+#pvDivider::after { content: "◂ depth ▸"; position: absolute; top: 24px; left: 50%; transform: translateX(-50%); background: var(--bg2); border: 1px solid var(--acc); border-radius: 11px; padding: 2px 8px; font-family: var(--mono); font-size: 10px; color: var(--acc); white-space: nowrap; }
 
 #pvDetails { position: absolute; top: 0; right: 0; bottom: 0; width: 300px; z-index: 55; background: rgba(18, 20, 25, .95); border-left: 1px solid var(--line); padding: 20px 18px; font-family: var(--mono); font-size: 11px; overflow: auto; }
 #pvDetails[hidden] { display: none; }
@@ -150,11 +182,37 @@ dialog::backdrop { background: rgba(0,0,0,.72); }
 #pvDetails dd { color: var(--ink); margin: 0 0 14px; word-break: break-all; line-height: 1.45; }
 
 /* ---------- context menus ---------- */
-#ctxMenu, #pvMenu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 190px; background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 4px; box-shadow: 0 12px 32px rgba(0,0,0,.55); }
-#ctxMenu[hidden], #pvMenu[hidden] { display: none; }
-#ctxMenu button, #pvMenu button { display: flex; justify-content: space-between; align-items: center; gap: 16px; background: none; border: none; text-align: left; padding: 7px 10px; border-radius: 6px; font-size: 12.5px; color: var(--ink); }
-#ctxMenu button:hover, #pvMenu button:hover { background: var(--bg3); }
-#pvMenu kbd { font-family: var(--mono); font-size: 10px; color: var(--ink3); background: none; }
+#ctxMenu, #pvMenu, #tctx, #cpick { position: fixed; z-index: 65; display: flex; flex-direction: column; min-width: 190px; background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 4px; box-shadow: 0 12px 32px rgba(0,0,0,.55); }
+#ctxMenu[hidden], #pvMenu[hidden], #tctx[hidden], #cpick[hidden] { display: none; }
+#ctxMenu button, #pvMenu button, #tctx button, #cpick button { display: flex; justify-content: space-between; align-items: center; gap: 16px; background: none; border: none; text-align: left; padding: 7px 10px; border-radius: 6px; font-size: 12.5px; color: var(--ink); }
+#ctxMenu button:hover, #pvMenu button:hover, #tctx button:hover, #cpick button:hover { background: var(--bg3); }
+#cpick { max-height: 300px; overflow: auto; }
+.crow { display: flex; align-items: center; gap: 8px; }
+.crow .cname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crow .cdate { font-family: var(--mono); font-size: 10px; color: var(--ink3); opacity: 0; transition: opacity .12s; flex: none; }
+.crow:hover .cdate { opacity: 1; }
+.crow .mini { flex: none; float: none; }
+#pvMenu kbd, #tctx kbd { font-family: var(--mono); font-size: 10px; color: var(--ink3); background: none; }
+
+/* ---------- drive tree ---------- */
+#tree { margin: 2px 0 8px; }
+.trow { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 6px; font-size: 12px; color: #d9dce5; cursor: pointer; white-space: nowrap; }
+.trow:hover { background: var(--bg2); }
+.trow.selected { background: var(--bg3); color: #fff; box-shadow: inset 2px 0 0 var(--acc); }
+.trow .caret { width: 14px; flex: none; color: var(--ink3); text-align: center; }
+.trow .caret:hover { color: var(--ink); }
+.trow .tname { overflow: hidden; text-overflow: ellipsis; }
+.trow.rootRow { font-weight: 600; }
+.trow .dot { margin-left: auto; }
+
+/* ---------- command palette ---------- */
+#palette { position: fixed; top: 11vh; left: 50%; transform: translateX(-50%); width: min(560px, 92vw); z-index: 80; background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 8px; box-shadow: 0 24px 64px rgba(0,0,0,.65); }
+#palette[hidden] { display: none; }
+#paletteInput { width: 100%; background: var(--bg1); font-size: 14px; padding: 10px 12px; }
+#paletteList { max-height: 46vh; overflow: auto; margin-top: 6px; display: flex; flex-direction: column; }
+.palRow { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 8px 10px; border-radius: 7px; font-size: 13px; color: var(--ink); cursor: pointer; }
+.palRow:hover, .palRow.sel { background: var(--bg3); }
+.palRow kbd { font-family: var(--mono); font-size: 10px; color: var(--ink3); background: none; flex: none; }
 
 /* ---------- modes ---------- */
 body.hide-sidebar #folders { display: none; }

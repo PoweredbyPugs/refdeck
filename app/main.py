@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .db import RefDeckDB
+from .depth import generate_depth_map
 from .indexer import ScanManager
 from .media import MediaRoots, classify_media
 from .mounts import MountError, MountManager
@@ -60,6 +61,8 @@ def create_app(mount_runner=None) -> FastAPI:
     roots = MediaRoots(parse_roots())
     data = data_dir()
     cache = data / "thumbs"
+    depth_dir = data / "depth"
+    depth_dir.mkdir(parents=True, exist_ok=True)
     db = RefDeckDB(data / "refdeck.db")
     db.init([(s["name"], s["path"]) for s in roots.status()])
     scanner = ScanManager(roots, db, thumb_fn=lambda p: make_thumb(p, cache))
@@ -128,6 +131,17 @@ def create_app(mount_runner=None) -> FastAPI:
     @app.get("/api/thumb")
     def api_thumb(root: str, path: str):
         return FileResponse(make_thumb(resolve_file(root, path), cache))
+
+    @app.get("/api/depth")
+    def api_depth(root: str, path: str):
+        target = resolve_file(root, path)
+        if classify_media(target) != "image":
+            raise HTTPException(status_code=400, detail="depth maps are generated for images only")
+        try:
+            out = generate_depth_map(target, depth_dir, data / "models")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"depth generation failed: {exc}") from exc
+        return FileResponse(out, media_type="image/png", headers={"X-Depth-Name": out.name})
 
     @app.get("/api/preview")
     def api_preview(root: str, path: str):

@@ -21,16 +21,16 @@ def make_client(tmp_path, monkeypatch, tree=True):
 
 def test_roots_online_and_counts(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
-    roots = client.get("/api/roots").json()
-    assert roots == [{"name": "Media", "path": str(tmp_path / "media"),
-                      "online": True, "media_count": 2}]
+    roots = {r["name"]: r for r in client.get("/api/roots").json()}
+    assert set(roots) == {"Media"}  # depth maps are served via /api/depth, not a root
+    assert roots["Media"]["online"] is True and roots["Media"]["media_count"] == 2
 
 
 def test_missing_root_is_offline_not_home(tmp_path, monkeypatch):
     monkeypatch.setenv("REFDECK_ROOTS", f"Gone={tmp_path / 'nope'}")
     monkeypatch.setenv("REFDECK_DATA_DIR", str(tmp_path / "data"))
-    roots = TestClient(create_app()).get("/api/roots").json()
-    assert roots[0]["name"] == "Gone" and roots[0]["online"] is False
+    roots = {r["name"]: r for r in TestClient(create_app()).get("/api/roots").json()}
+    assert roots["Gone"]["online"] is False
 
 
 def test_browse_dirs_only_with_recursive_count(tmp_path, monkeypatch):
@@ -86,3 +86,13 @@ def test_files_type_and_ext_filters(tmp_path, monkeypatch):
     assert [f["name"] for f in videos["files"]] == ["clip.mov"]
     pngs = client.get("/api/files", params={"root": "Media", "recursive": 1, "exts": "png"}).json()
     assert [f["name"] for f in pngs["files"]] == ["nested.png"]
+
+
+def test_depth_endpoint_guards(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    (media / "clip.mov").write_bytes(b"fake")
+    client.post("/api/scan/Media")
+    client.app.state.scanner.wait("Media")
+    assert client.get("/api/depth", params={"root": "Media", "path": "ghost.jpg"}).status_code == 404
+    resp = client.get("/api/depth", params={"root": "Media", "path": "clip.mov"})
+    assert resp.status_code == 400 and "images only" in resp.json()["detail"]

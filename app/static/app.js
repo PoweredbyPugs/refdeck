@@ -10,6 +10,10 @@ const state = {
   drill: localStorage.getItem('refdeck.drill') === '1',
   typeFilter: '',
   extActive: new Set(),
+  treeExpanded: new Set(),
+  treeChildren: new Map(),
+  palIndex: 0,
+  palItems: [],
   view: localStorage.getItem('refdeck.view') || 'masonry',
   sidebarHidden: localStorage.getItem('refdeck.sidebarHidden') === '1',
   zen: false,
@@ -17,13 +21,15 @@ const state = {
   previewItem: null,
   pvDetailsOpen: false,
   contextIndex: null,
-  pv: { scale: 1, x: 0, y: 0 },
+  pv: { scale: 1, x: 0, y: 0, rot: 0, flipX: false, flipY: false },
+  pvDepth: { on: false, split: 0.5 },
   masonryNext: 0,
   contextItem: null,
   filter: '',
   sort: 'name',
   collections: [],
-  selectedCollectionId: null,
+  collectionId: null,
+  pickItem: null,
   currentBoard: { id: null, title: 'Untitled board', document: { items: [], viewport: { x: 0, y: 0, scale: 1 } } },
   selectedBoard: new Set(),
   editingNote: null,
@@ -56,9 +62,29 @@ async function api(path, opts) {
 }
 
 async function init() {
-  await refreshRootSelect()
-  $('rootSelect').onchange = () => { state.root = $('rootSelect').value; state.path = ''; browse() }
-  $('upButton').onclick = () => { state.path = state.path.split('/').slice(0, -1).join('/'); browse() }
+  await refreshRoots()
+  $('tree').onclick = event => {
+    const row = event.target.closest('.trow')
+    if (!row) return
+    if (event.target.closest('.caret')) { toggleNode(row.dataset.root, row.dataset.path); return }
+    selectFolder(row.dataset.root, row.dataset.path)
+  }
+  $('tree').addEventListener('contextmenu', event => {
+    const row = event.target.closest('.trow')
+    if (!row) return
+    event.preventDefault()
+    openTreeCtx(event, row.dataset.root, row.dataset.path)
+  })
+  $('tctx').onclick = event => {
+    const button = event.target.closest('button[data-t]')
+    $('tctx').hidden = true
+    if (!button) return
+    const { root, path } = state.tctxTarget
+    if (button.dataset.t === 'open') selectFolder(root, path)
+    if (button.dataset.t === 'drill') selectFolder(root, path, true)
+    if (button.dataset.t === 'flat') selectFolder(root, path, false)
+    if (button.dataset.t === 'rescan') { api(`/api/scan/${encodeURIComponent(root)}`, { method: 'POST' }).then(pollScan) }
+  }
   let searchTimer
   $('searchBox').oninput = event => {
     state.filter = event.target.value
@@ -68,18 +94,29 @@ async function init() {
   $('sortSelect').onchange = event => { state.sort = event.target.value; resetGrid() }
   $('drillToggle').onclick = () => setDrill(!state.drill)
   $('drillToggle').classList.toggle('active', state.drill)
-  document.querySelectorAll('#typeSeg button').forEach(b => b.onclick = () => {
-    state.typeFilter = b.dataset.type
-    state.extActive.clear()
-    document.querySelectorAll('#typeSeg button').forEach(x => x.classList.toggle('active', x === b))
-    renderExtFilters()
-    resetGrid()
-  })
+  document.querySelectorAll('#typeSeg button').forEach(b => b.onclick = () => setTypeFilter(b.dataset.type))
   document.querySelector('#typeSeg button[data-type=""]').classList.add('active')
   renderExtFilters()
+  $('paletteInput').oninput = () => renderPalette($('paletteInput').value)
+  $('paletteInput').onkeydown = event => {
+    if (event.key === 'ArrowDown') { event.preventDefault(); movePalette(1) }
+    if (event.key === 'ArrowUp') { event.preventDefault(); movePalette(-1) }
+    if (event.key === 'Enter') { event.preventDefault(); runPalette(state.palIndex) }
+    if (event.key === 'Escape') { event.preventDefault(); closePalette() }
+    event.stopPropagation()
+  }
+  $('paletteList').onclick = event => {
+    const row = event.target.closest('.palRow')
+    if (row) runPalette(+row.dataset.pi)
+  }
+  document.addEventListener('keydown', event => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      event.preventDefault()
+      $('palette').hidden ? openPalette() : closePalette()
+    }
+  })
   $('newCollection').onclick = newCollection
-  $('newBoard').onclick = () => { state.currentBoard = { id: null, title: 'Untitled board', document: { items: [], viewport: { x: 0, y: 0, scale: 1 } } }; state.selectedBoard.clear(); setCanvas(0, 0, 1); renderBoard() }
-  $('addNote').onclick = () => addNoteAt(viewportCenterWorld())
+  $('newBoard').onclick = () => { state.currentBoard = { id: null, title: 'Untitled board', document: { items: [], viewport: { x: 0, y: 0, scale: 1 } } }; state.selectedBoard.clear(); setCanvas(0, 0, 1); renderBoard(); resetBoardHistory() }
   document.querySelectorAll('#alignSeg button').forEach(b => b.onclick = () => alignSelected(b.dataset.align))
   $('boardViewport').addEventListener('contextmenu', event => {
     event.preventDefault()
@@ -110,6 +147,7 @@ async function init() {
     if (action === 'delete') deleteSelectedBoardItem()
   }
   $('saveBoard').onclick = saveBoard
+  $('boardTitle').onchange = () => { state.currentBoard.title = $('boardTitle').value || 'Untitled board'; recordBoard() }
   $('modeExplorer').onclick = () => setMode('explorer')
   $('modeSplit').onclick = () => setMode('split')
   $('modeCanvas').onclick = () => setMode('canvas')
@@ -131,7 +169,7 @@ async function init() {
       await api('/api/mounts', { method: 'POST', headers, body: JSON.stringify(body) })
       event.target.reset()
       await renderSettings()
-      await refreshRootSelect()
+      await refreshRoots()
       pollScan()
     } catch (err) { $('mountError').textContent = err.message }
   }
@@ -150,7 +188,7 @@ async function init() {
     if (button) {
       if (button.dataset.action === 'preview') openPreviewAt(idx)
       if (button.dataset.action === 'board') addToBoard(item)
-      if (button.dataset.action === 'collect') addToSelectedCollection(item)
+      if (button.dataset.action === 'collect') openCollectionPicker(event, item)
       return
     }
     if (state.view !== 'cards') openPreviewAt(idx)
@@ -169,13 +207,38 @@ async function init() {
     const item = state.contextItem
     if (button.dataset.ctx === 'preview') openPreviewAt(state.contextIndex)
     if (button.dataset.ctx === 'board') addToBoard(item)
-    if (button.dataset.ctx === 'collect') addToSelectedCollection(item)
+    if (button.dataset.ctx === 'collect') openCollectionPicker(event, item)
+    if (button.dataset.ctx === 'uncollect') removeFromCollection(item)
+    if (button.dataset.ctx === 'depth') generateDepthFor(item)
     if (button.dataset.ctx === 'original') window.open(mediaUrl(normalizeExplorerItem(item)), '_blank')
   }
   document.addEventListener('click', event => {
     if (!event.target.closest('#ctxMenu')) $('ctxMenu').hidden = true
     if (!event.target.closest('#bctx')) $('bctx').hidden = true
+    if (!event.target.closest('#tctx')) $('tctx').hidden = true
+    if (!event.target.closest('#cpick')) $('cpick').hidden = true
+    if (!event.target.closest('#palette')) closePalette()
   })
+  $('cpick').onclick = async event => {
+    const button = event.target.closest('button[data-cid]')
+    $('cpick').hidden = true
+    if (!button || !state.pickItem) return
+    let cid = button.dataset.cid
+    if (cid === 'new') {
+      const title = prompt('Collection name?')
+      if (!title) return
+      const created = await api('/api/collections', { method: 'POST', headers, body: JSON.stringify({ title }) })
+      cid = created.id
+    }
+    const n = normalizeExplorerItem(state.pickItem)
+    await api(`/api/collections/${cid}/items`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ path: `${n.root}/${n.path}`, media_type: n.media_type })
+    })
+    await loadCollections()
+    if (state.collectionId) renderCollectionGrid()
+    $('status').textContent = 'saved to collection'
+  }
   $('gridScroll').addEventListener('scroll', () => { $('ctxMenu').hidden = true }, { passive: true })
   $('grid').addEventListener('dragstart', event => {
     const itemEl = event.target.closest('[data-idx]')
@@ -201,6 +264,12 @@ async function init() {
     if (event.key === '-') { event.preventDefault(); pvZoom(0.8) }
     if (event.key === '0') { event.preventDefault(); pvResetZoom() }
     if (event.key.toLowerCase() === 'i') { event.preventDefault(); pvDetailsToggle() }
+    if (event.key.toLowerCase() === 'r' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); pvRotate(event.shiftKey ? -1 : 1) }
+    if (event.key.toLowerCase() === 'h' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); pvFlip('x') }
+    if (event.key.toLowerCase() === 'v' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); pvFlip('y') }
+    if (event.key === '1') { event.preventDefault(); pvOriginalSize() }
+    if (event.key.toLowerCase() === 'm' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); toggleDepthCompare() }
+    if (event.key === '/') { event.preventDefault(); $('preview').close(); openPalette() }
   })
   $('preview').addEventListener('close', () => {
     $('previewBody').innerHTML = ''  // removes any <video>, stopping playback
@@ -229,20 +298,28 @@ async function init() {
     if (action === 'zoomin') pvZoom(1.25)
     if (action === 'zoomout') pvZoom(0.8)
     if (action === 'zoomreset') pvResetZoom()
+    if (action === 'rotcw') pvRotate(1)
+    if (action === 'rotccw') pvRotate(-1)
+    if (action === 'fliph') pvFlip('x')
+    if (action === 'flipv') pvFlip('y')
+    if (action === 'onesize') pvOriginalSize()
+    if (action === 'depth') toggleDepthCompare()
+    if (action === 'depthcopy') copyDepthToClipboard()
+    if (action === 'depthsave') downloadDepth()
     if (action === 'details') pvDetailsToggle()
     if (action === 'close') $('preview').close()
     if (!item) return
     if (action === 'board') addToBoard(item)
-    if (action === 'collect') addToSelectedCollection(item)
+    if (action === 'collect') openCollectionPicker(event, item)
     if (action === 'original') window.open(mediaUrl(normalizeExplorerItem(item)), '_blank')
   }
   $('previewBody').addEventListener('wheel', event => {
-    if (!event.ctrlKey) return
     event.preventDefault()
-    pvZoom(event.deltaY > 0 ? 0.9 : 1.1)
+    pvZoomAt(event.clientX, event.clientY, event.deltaY > 0 ? 0.9 : 1.1)
   }, { passive: false })
   $('previewBody').onmousedown = event => {
-    if (state.pv.scale <= 1 || event.button !== 0) return
+    if (event.button !== 0) return
+    if (pvMedia()?.tagName === 'VIDEO' && state.pv.scale <= 1) return
     event.preventDefault()
     const startX = event.clientX, startY = event.clientY, origin = { ...state.pv }
     $('previewBody').classList.add('panning')
@@ -270,18 +347,21 @@ async function init() {
   await loadCollections()
   await loadBoards()
   renderBoard()
+  resetBoardHistory()
   pollScan()
 }
 
 function handleKeys(event) {
   if (event.target.closest('input, textarea, select, dialog')) return
   const key = event.key.toLowerCase()
-  if (key === 'c') { event.preventDefault(); setMode(state.mode === 'canvas' ? 'split' : 'canvas') }
-  if (key === 'e') { event.preventDefault(); setMode(state.mode === 'explorer' ? 'split' : 'explorer') }
-  if (key === 'd') { event.preventDefault(); setDrill(!state.drill) }
-  if (key === 'f') { event.preventDefault(); setSidebarHidden(!state.sidebarHidden) }
-  if (key === 'z') { event.preventDefault(); setZen(!state.zen) }
-  if (key === 'n') { event.preventDefault(); addNoteAt(viewportCenterWorld()) }
+  const mod = event.metaKey || event.ctrlKey || event.altKey
+  if (!mod && key === 'c') { event.preventDefault(); setMode(state.mode === 'canvas' ? 'split' : 'canvas') }
+  if (!mod && key === 'e') { event.preventDefault(); setMode(state.mode === 'explorer' ? 'split' : 'explorer') }
+  if (!mod && key === 'd') { event.preventDefault(); setDrill(!state.drill) }
+  if (!mod && key === 'f') { event.preventDefault(); setSidebarHidden(!state.sidebarHidden) }
+  if (!mod && key === 'z') { event.preventDefault(); setZen(!state.zen) }
+  if (!mod && key === 'n') { event.preventDefault(); addNoteAt(viewportCenterWorld()) }
+  if (!mod && key === '/') { event.preventDefault(); openPalette() }
   if (event.key === 'Escape') {
     if (state.zen) { setZen(false); return }
     setMode('split'); clearSelection()
@@ -290,6 +370,7 @@ function handleKeys(event) {
   if (event.key === ']') { moveSelectedLayer(1) }
   if (event.key === '[') { moveSelectedLayer(-1) }
   if ((event.metaKey || event.ctrlKey) && key === 's') { event.preventDefault(); saveBoard() }
+  if ((event.metaKey || event.ctrlKey) && key === 'z') { event.preventDefault(); event.shiftKey ? redoBoard() : undoBoard() }
 }
 
 function setMode(mode) {
@@ -314,26 +395,106 @@ function setZen(on) {
   if (state.view === 'masonry') renderLoaded()
 }
 
-async function refreshRootSelect() {
+async function refreshRoots() {
   state.roots = await api('/api/roots')
-  $('rootSelect').innerHTML = state.roots.map(r => `<option ${r.name === state.root ? 'selected' : ''}>${h(r.name)}</option>`).join('')
   if (!state.roots.some(r => r.name === state.root)) {
     state.root = state.roots[0]?.name
     state.path = ''
-    if (state.root) browse()
+    if (state.root) { state.treeExpanded.add(treeKey(state.root, '')); browse() }
   }
+  renderTree()
+}
+
+const treeKey = (root, path) => `${root}\x00${path}`
+
+async function ensureChildren(root, path) {
+  const key = treeKey(root, path)
+  if (!state.treeChildren.has(key)) {
+    try {
+      const listing = await api(`/api/browse?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`)
+      state.treeChildren.set(key, listing.dirs)
+    } catch {
+      state.treeChildren.set(key, [])
+    }
+  }
+  return state.treeChildren.get(key)
+}
+
+async function toggleNode(root, path) {
+  const key = treeKey(root, path)
+  if (state.treeExpanded.has(key)) state.treeExpanded.delete(key)
+  else { state.treeExpanded.add(key); await ensureChildren(root, path) }
+  renderTree()
+}
+
+function renderTree() {
+  const rows = []
+  const walk = (root, path, depth) => {
+    if (!state.treeExpanded.has(treeKey(root, path))) return
+    for (const dir of state.treeChildren.get(treeKey(root, path)) || []) {
+      rows.push(treeRowHtml(root, dir.path, dir.name, depth))
+      walk(root, dir.path, depth + 1)
+    }
+  }
+  for (const r of state.roots) {
+    rows.push(treeRowHtml(r.name, '', r.name, 0, r.online))
+    walk(r.name, '', 1)
+  }
+  $('tree').innerHTML = rows.join('')
+}
+
+function treeRowHtml(root, path, name, depth, online = null) {
+  const selected = root === state.root && path === state.path
+  const expanded = state.treeExpanded.has(treeKey(root, path))
+  const dot = online === null ? '' : `<span class="dot ${online ? 'on' : 'off'}"></span>`
+  return `<div class="trow ${selected ? 'selected' : ''} ${depth === 0 ? 'rootRow' : ''}" data-root="${h(root)}" data-path="${h(path)}" style="padding-left:${4 + depth * 14}px" title="${h(root)}/${h(path)}">` +
+    `<span class="caret">${expanded ? '▾' : '▸'}</span><span class="tname">${h(name)}</span>${dot}</div>`
+}
+
+async function selectFolder(root, path, drill = null) {
+  state.root = root
+  state.path = path
+  state.treeExpanded.add(treeKey(root, ''))
+  let acc = ''
+  for (const part of path.split('/').filter(Boolean)) {
+    acc = acc ? `${acc}/${part}` : part
+    state.treeExpanded.add(treeKey(root, acc))
+  }
+  if (drill !== null && drill !== state.drill) {
+    state.drill = drill
+    localStorage.setItem('refdeck.drill', drill ? '1' : '0')
+    $('drillToggle').classList.toggle('active', drill)
+  }
+  await browse()
+}
+
+function openTreeCtx(event, root, path) {
+  state.tctxTarget = { root, path }
+  const rows = [['open', 'Open'], ['drill', 'Drill down here', 'D']]
+  if (state.drill) rows.push(['flat', 'Open flat (this folder only)'])
+  if (path === '') rows.push(['rescan', 'Rescan drive'])
+  const menu = $('tctx')
+  menu.innerHTML = rows.map(([action, label, kbd]) =>
+    `<button data-t="${action}">${label}${kbd ? `<kbd>${kbd}</kbd>` : ''}</button>`).join('')
+  menu.hidden = false
+  menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8) + 'px'
+  menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8) + 'px'
 }
 
 async function browse() {
+  state.collectionId = null
+  renderCollections()
   const listing = await api(`/api/browse?root=${encodeURIComponent(state.root)}&path=${encodeURIComponent(state.path)}`)
   state.subtreeCount = listing.media_count
   $('pathLabel').textContent = `${state.root}/${state.path}`
-  $('dirList').innerHTML = listing.dirs.map(d => `<div class="row" data-path="${h(d.path)}">📁 ${h(d.name)}</div>`).join('')
-  document.querySelectorAll('#dirList .row').forEach(row => row.onclick = () => { state.path = row.dataset.path; browse() })
+  state.treeChildren.set(treeKey(state.root, state.path), listing.dirs)
+  state.treeExpanded.add(treeKey(state.root, state.path))
+  renderTree()
   await resetGrid()
 }
 
 async function resetGrid() {
+  if (state.collectionId) { renderCollectionGrid(); return }
   state.gridFiles = []
   state.gridTotal = 0
   state.gridOffset = 0
@@ -388,13 +549,15 @@ function syncViewButtons() {
 function openCtxMenu(event, item) {
   state.contextItem = item
   const menu = $('ctxMenu')
+  menu.querySelector('[data-ctx="uncollect"]').style.display = item.collectionItemId ? '' : 'none'
+  menu.querySelector('[data-ctx="depth"]').style.display = item.media_type === 'image' ? '' : 'none'
   menu.hidden = false
   menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8) + 'px'
   menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8) + 'px'
 }
 
 async function loadMore() {
-  if (state.gridLoading || !state.root) return
+  if (state.gridLoading || !state.root || state.collectionId) return
   state.gridLoading = true
   try {
     const exts = [...state.extActive].map(key =>
@@ -415,6 +578,11 @@ async function loadMore() {
 
 function renderGridHint() {
   const hint = $('gridHint')
+  if (state.collectionId) {
+    hint.hidden = state.gridTotal !== 0
+    if (!hint.hidden) hint.textContent = 'Empty collection — right-click any file → Save to collection.'
+    return
+  }
   if (state.gridTotal === 0 && !state.drill && !state.filter && state.subtreeCount > 0) {
     hint.hidden = false
     hint.innerHTML = `No media in this folder — <b>${state.subtreeCount}</b> items in subfolders. <button id="hintDrill">Drill down</button>`
@@ -423,6 +591,20 @@ function renderGridHint() {
     hint.hidden = false
     hint.textContent = state.filter ? 'No matches.' : 'No media here.'
   } else hint.hidden = true
+}
+
+function setTypeFilter(type) {
+  state.typeFilter = type
+  state.extActive.clear()
+  document.querySelectorAll('#typeSeg button').forEach(b => b.classList.toggle('active', b.dataset.type === type))
+  renderExtFilters()
+  resetGrid()
+}
+
+function setSort(sort) {
+  state.sort = sort
+  $('sortSelect').value = sort
+  resetGrid()
 }
 
 function renderExtFilters() {
@@ -505,6 +687,7 @@ function openPreviewAt(idx) {
 function renderPreview(item) {
   const normalized = normalizeExplorerItem(item)
   state.previewItem = item
+  state.pvDepth = { on: false, split: 0.5 }
   pvResetZoom()
   $('previewBody').innerHTML = normalized.media_type === 'video'
     ? `<video src="${mediaUrl(normalized)}" controls autoplay></video>`
@@ -512,7 +695,7 @@ function renderPreview(item) {
   renderPvDetails()
   const media = pvMedia()
   if (media) {
-    const update = () => renderPvDetails()
+    const update = () => { renderPvDetails(); pvApply() }
     media.tagName === 'VIDEO' ? media.addEventListener('loadedmetadata', update) : media.addEventListener('load', update)
   }
   if (!$('preview').open) $('preview').showModal()
@@ -557,19 +740,164 @@ function pvMedia() { return $('previewBody').firstElementChild }
 
 function pvApply() {
   const media = pvMedia()
-  if (media) media.style.transform = `translate(${state.pv.x}px, ${state.pv.y}px) scale(${state.pv.scale})`
-  $('previewBody').classList.toggle('zoomed', state.pv.scale > 1)
+  if (!media) return
+  const { x, y, scale, rot, flipX, flipY } = state.pv
+  // when rotated 90/270 the fitted content's dims swap — auto-refit so the
+  // whole image stays visible at 100% zoom
+  let base = 1
+  const nw = media.naturalWidth || media.videoWidth, nh = media.naturalHeight || media.videoHeight
+  if (rot % 180 !== 0 && nw && nh) {
+    const body = $('previewBody')
+    const vw = body.clientWidth, vh = body.clientHeight
+    const s0 = Math.min(vw / nw, vh / nh)
+    base = Math.min(vw / (nh * s0), vh / (nw * s0))
+  }
+  const s = scale * base
+  const transform = `translate(${x}px, ${y}px) rotate(${rot}deg) scale(${s * (flipX ? -1 : 1)}, ${s * (flipY ? -1 : 1)})`
+  media.style.transform = transform
+  const depthOverlay = $('previewBody').querySelector('#pvDepth')
+  if (depthOverlay) depthOverlay.style.transform = transform
+}
+
+function pvZoomAt(clientX, clientY, factor) {
+  // keep the point under the cursor fixed: translate is outermost (screen
+  // space), so t' = (1-f)(cursor-center) + f·t regardless of rotation/flip
+  const rect = $('previewBody').getBoundingClientRect()
+  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2
+  const next = clamp(state.pv.scale * factor, 0.05, 40)
+  const f = next / state.pv.scale
+  state.pv.x = (1 - f) * (clientX - cx) + f * state.pv.x
+  state.pv.y = (1 - f) * (clientY - cy) + f * state.pv.y
+  state.pv.scale = next
+  pvApply()
 }
 
 function pvZoom(factor) {
-  state.pv.scale = clamp(state.pv.scale * factor, 0.2, 10)
-  if (state.pv.scale <= 1.001) { state.pv.x = 0; state.pv.y = 0 }
+  const rect = $('previewBody').getBoundingClientRect()
+  pvZoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor)
+}
+
+function pvRotate(quarterTurns) {
+  state.pv.rot = ((state.pv.rot + quarterTurns * 90) % 360 + 360) % 360
+  pvApply()
+}
+
+function pvFlip(axis) {
+  if (axis === 'x') state.pv.flipX = !state.pv.flipX
+  else state.pv.flipY = !state.pv.flipY
   pvApply()
 }
 
 function pvResetZoom() {
-  state.pv = { scale: 1, x: 0, y: 0 }
+  state.pv = { scale: 1, x: 0, y: 0, rot: 0, flipX: false, flipY: false }
   pvApply()
+}
+
+function pvOriginalSize() {
+  const media = pvMedia()
+  if (!media) return
+  const nw = media.naturalWidth || media.videoWidth, nh = media.naturalHeight || media.videoHeight
+  if (!nw || !nh) return
+  const body = $('previewBody')
+  const fitScale = Math.min(body.clientWidth / nw, body.clientHeight / nh)
+  state.pv.scale = clamp(1 / fitScale, 0.05, 40)
+  state.pv.x = 0
+  state.pv.y = 0
+  pvApply()
+  $('status').textContent = `1:1 — ${nw}×${nh}`
+}
+
+function depthUrlFor(item) {
+  const n = normalizeExplorerItem(item)
+  return `/api/depth?root=${encodeURIComponent(n.root)}&path=${encodeURIComponent(n.path)}`
+}
+
+async function fetchDepth(item) {
+  $('status').textContent = 'generating depth map… (first run downloads the model)'
+  const res = await fetch(depthUrlFor(item))
+  if (!res.ok) {
+    let detail
+    try { detail = (await res.json()).detail } catch { /* keep generic */ }
+    $('status').textContent = detail || 'depth generation failed'
+    return null
+  }
+  $('status').textContent = 'depth map saved to Depth drive'
+  refreshRoots()
+  return { blob: await res.blob(), name: res.headers.get('X-Depth-Name') || 'depth.png' }
+}
+
+async function generateDepthFor(item) {
+  if (!item || item.media_type !== 'image') { $('status').textContent = 'depth maps are for images'; return }
+  await fetchDepth(item)
+}
+
+function positionDepthDivider() {
+  const body = $('previewBody')
+  const overlay = body.querySelector('#pvDepth')
+  const divider = body.querySelector('#pvDivider')
+  if (!overlay || !divider) return
+  const pct = state.pvDepth.split * 100
+  overlay.style.clipPath = `inset(0 ${100 - pct}% 0 0)`
+  divider.style.left = `calc(${pct}% - 1px)`
+}
+
+async function toggleDepthCompare() {
+  const item = state.previewItem
+  if (!item || item.media_type !== 'image') { $('status').textContent = 'depth maps are for images'; return }
+  const body = $('previewBody')
+  const existing = body.querySelector('#pvDepth')
+  if (existing) {
+    existing.remove()
+    body.querySelector('#pvDivider')?.remove()
+    state.pvDepth.on = false
+    return
+  }
+  const depth = await fetchDepth(item)
+  if (!depth) return
+  const overlay = document.createElement('img')
+  overlay.id = 'pvDepth'
+  overlay.draggable = false
+  overlay.src = URL.createObjectURL(depth.blob)
+  const divider = document.createElement('div')
+  divider.id = 'pvDivider'
+  body.append(overlay, divider)
+  state.pvDepth.on = true
+  positionDepthDivider()
+  pvApply()
+  divider.onmousedown = event => {
+    event.stopPropagation()
+    event.preventDefault()
+    document.onmousemove = move => {
+      const rect = body.getBoundingClientRect()
+      state.pvDepth.split = clamp((move.clientX - rect.left) / rect.width, 0.02, 0.98)
+      positionDepthDivider()
+    }
+    document.onmouseup = () => { document.onmousemove = null; document.onmouseup = null }
+  }
+}
+
+function downloadBlob(blob, name) {
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = name
+  a.click()
+}
+
+async function copyDepthToClipboard() {
+  const depth = await fetchDepth(state.previewItem)
+  if (!depth) return
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': depth.blob })])
+    $('status').textContent = 'depth map copied to clipboard'
+  } catch {
+    downloadBlob(depth.blob, depth.name)
+    $('status').textContent = 'clipboard needs HTTPS — downloaded the depth map instead'
+  }
+}
+
+async function downloadDepth() {
+  const depth = await fetchDepth(state.previewItem)
+  if (depth) downloadBlob(depth.blob, depth.name)
 }
 
 async function previewNav(direction) {
@@ -589,80 +917,80 @@ async function newCollection() {
   const title = prompt('Collection name?')
   if (!title) return
   const created = await api('/api/collections', { method: 'POST', headers, body: JSON.stringify({ title }) })
-  state.selectedCollectionId = created.id
   await loadCollections()
+  openCollection(created.id)
 }
 
 async function loadCollections() {
   state.collections = await api('/api/collections')
-  if (!state.selectedCollectionId && state.collections.length) state.selectedCollectionId = state.collections[0].id
   renderCollections()
+}
+
+function fmtShortDate(ts) {
+  if (!ts) return ''
+  const d = new Date(ts.replace(' ', 'T') + 'Z')
+  return isNaN(d) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
 function renderCollections() {
   $('collections').innerHTML = state.collections.map(c => `
-    <div class="row ${c.id === state.selectedCollectionId ? 'selected' : ''}" data-collectionid="${c.id}">
+    <div class="row crow ${c.id === state.collectionId ? 'selected' : ''}" data-collectionid="${c.id}">
+      <span class="cname">${h(c.title)}</span>
+      <span class="cdate" title="last save">${fmtShortDate(c.updated_at)}</span>
       <button class="mini" data-delcollection="${c.id}">✕</button>
-      ${h(c.title)} (${c.items.length})
-    </div>`).join('')
-  document.querySelectorAll('[data-collectionid]').forEach(row => row.onclick = () => { state.selectedCollectionId = +row.dataset.collectionid; renderCollections() })
+    </div>`).join('') || '<div class="hint">Right-click any file → Save to collection.</div>'
+  document.querySelectorAll('[data-collectionid]').forEach(row => row.onclick = () => openCollection(+row.dataset.collectionid))
   document.querySelectorAll('[data-delcollection]').forEach(b => b.onclick = async event => {
     event.stopPropagation()
     if (!confirm('Delete this collection?')) return
     await api(`/api/collections/${b.dataset.delcollection}`, { method: 'DELETE' })
-    if (state.selectedCollectionId === +b.dataset.delcollection) state.selectedCollectionId = null
+    const wasOpen = state.collectionId === +b.dataset.delcollection
     await loadCollections()
+    if (wasOpen) { state.collectionId = null; browse() }
   })
-  const selected = selectedCollection()
-  if (!selected) {
-    $('collectionDetail').innerHTML = '<div class="hint">Create a collection, then use Collect on media cards.</div>'
-    return
-  }
-  $('collectionDetail').innerHTML = `
-    <div class="hint">Selected: ${h(selected.title)}</div>
-    ${selected.items.map(item => collectionItemHtml(item)).join('') || '<div class="hint">Empty. Use Collect on media cards.</div>'}`
-  document.querySelectorAll('[data-removeitem]').forEach(b => b.onclick = async () => { await api(`/api/collections/items/${b.dataset.removeitem}`, { method: 'DELETE' }); await loadCollections() })
-  document.querySelectorAll('[data-boarditem]').forEach(b => addCollectionButtonHandler(b, addToBoard))
-  document.querySelectorAll('[data-previewitem]').forEach(b => addCollectionButtonHandler(b, preview))
 }
 
-function collectionItemHtml(item) {
-  const media = itemFromCollection(item)
-  return `
-    <div class="collectionItem">
-      <div class="name">${h(media.name)}</div>
-      <div class="actions">
-        <button data-previewitem="${item.id}">Preview</button>
-        <button data-boarditem="${item.id}">Board</button>
-        <button data-removeitem="${item.id}">Remove</button>
-      </div>
-    </div>`
+function openCollection(id) {
+  state.collectionId = id
+  if (state.view !== 'masonry') { state.view = 'masonry'; syncViewButtons() }
+  renderCollectionGrid()
+  renderCollections()
 }
 
-function addCollectionButtonHandler(button, fn) {
-  button.onclick = () => {
-    const selected = selectedCollection()
-    const item = selected?.items.find(x => String(x.id) === String(button.dataset.boarditem || button.dataset.previewitem))
-    if (item) fn(itemFromCollection(item))
-  }
+function renderCollectionGrid() {
+  const col = state.collections.find(c => c.id === state.collectionId)
+  if (!col) { state.collectionId = null; return }
+  state.gridFiles = []
+  state.gridOffset = 0
+  state.subtreeCount = 0
+  prepareGrid()
+  const mapped = col.items.map(it => ({ ...itemFromCollection(it), size: 0, mtime: 0, collectionItemId: it.id }))
+  state.gridTotal = mapped.length
+  appendCards(mapped)
+  $('mediaCount').textContent = `${mapped.length} items`
+  $('pathLabel').textContent = `collection · ${col.title}`
+  renderGridHint()
 }
 
-function selectedCollection() {
-  return state.collections.find(c => c.id === state.selectedCollectionId)
-}
-
-async function addToSelectedCollection(item) {
-  if (!state.collections.length) await newCollection()
-  const selected = selectedCollection()
-  if (!selected) return
-  const normalized = normalizeExplorerItem(item)
-  await api(`/api/collections/${selected.id}/items`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ path: `${normalized.root}/${normalized.path}`, media_type: normalized.media_type })
-  })
+async function removeFromCollection(item) {
+  if (!item?.collectionItemId) return
+  await api(`/api/collections/items/${item.collectionItemId}`, { method: 'DELETE' })
   await loadCollections()
-  $('status').textContent = `added to ${selected.title}`
+  if (state.collectionId) renderCollectionGrid()
+}
+
+function openCollectionPicker(event, item) {
+  if (!item) return
+  state.pickItem = item
+  const menu = $('cpick')
+  menu.innerHTML = state.collections.map(c =>
+    `<button data-cid="${c.id}">${h(c.title)}</button>`).join('') +
+    '<button data-cid="new">+ New collection…</button>'
+  const host = document.querySelector('dialog[open]') || document.body
+  if (menu.parentElement !== host) host.appendChild(menu)
+  menu.hidden = false
+  menu.style.left = Math.min(event.clientX, window.innerWidth - 230) + 'px'
+  menu.style.top = Math.min(event.clientY, window.innerHeight - 320) + 'px'
 }
 
 function itemFromCollection(item) {
@@ -681,6 +1009,7 @@ async function loadBoards() {
     setCanvas(viewport.x || 0, viewport.y || 0, viewport.scale || 1)
     state.selectedBoard.clear()
     renderBoard()
+    resetBoardHistory()
   })
   document.querySelectorAll('[data-delboard]').forEach(b => b.onclick = async event => {
     event.stopPropagation()
@@ -719,7 +1048,7 @@ async function renderSettings() {
     if (!confirm('Unmount and remove this share?')) return
     await api(`/api/mounts/${b.dataset.unmount}`, { method: 'DELETE' })
     await renderSettings()
-    await refreshRootSelect()
+    await refreshRoots()
   })
 }
 
@@ -735,7 +1064,7 @@ async function pollScan() {
     scanTimer = setTimeout(pollScan, 3000)
   } else if (/^(scanning|caching)/.test($('status').textContent)) {
     $('status').textContent = 'scan complete'
-    refreshRootSelect()
+    refreshRoots()
   }
 }
 
@@ -823,6 +1152,7 @@ function addToBoard(item, point = null) {
   state.selectedBoard = new Set([state.currentBoard.document.items.length - 1])
   fetchRatio(boardItem)
   renderBoard()
+  recordBoard()
 }
 
 function fetchRatio(item) {
@@ -832,6 +1162,7 @@ function fetchRatio(item) {
     item.ar = w / hgt
     item.h = Math.round(item.w / item.ar)
     renderBoard()
+    scheduleAutosave()
   }
   if (item.media_type === 'video') {
     const video = document.createElement('video')
@@ -845,6 +1176,49 @@ function fetchRatio(item) {
   }
 }
 
+function mdInline(s) {
+  return s
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|\s)\*([^*\s][^*]*)\*(?=\s|$)/g, '$1<em>$2</em>')
+    .replace(/~~([^~]+)~~/g, '<s>$1</s>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+}
+
+function renderMarkdown(text) {
+  if (!text || !text.trim()) return '<span class="hint">Double-click to edit</span>'
+  const lines = h(text).split('\n')
+  const out = []
+  let inCode = false
+  let listTag = null
+  const closeList = () => { if (listTag) { out.push(`</${listTag}>`); listTag = null } }
+  const openList = tag => { if (listTag !== tag) { closeList(); out.push(`<${tag}>`); listTag = tag } }
+  for (const line of lines) {
+    if (line.trim().startsWith('```')) {
+      closeList()
+      out.push(inCode ? '</code></pre>' : '<pre><code>')
+      inCode = !inCode
+      continue
+    }
+    if (inCode) { out.push(line + '\n'); continue }
+    const heading = line.match(/^(#{1,3})\s+(.*)/)
+    if (heading) { closeList(); const level = heading[1].length; out.push(`<h${level}>${mdInline(heading[2])}</h${level}>`); continue }
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { closeList(); out.push('<hr>'); continue }
+    const quote = line.match(/^&gt;\s?(.*)/)
+    if (quote) { closeList(); out.push(`<blockquote>${mdInline(quote[1])}</blockquote>`); continue }
+    const bullet = line.match(/^\s*[-*]\s+(.*)/)
+    if (bullet) { openList('ul'); out.push(`<li>${mdInline(bullet[1])}</li>`); continue }
+    const numbered = line.match(/^\s*\d+[.)]\s+(.*)/)
+    if (numbered) { openList('ol'); out.push(`<li>${mdInline(numbered[1])}</li>`); continue }
+    closeList()
+    if (line.trim() === '') out.push('<div class="mdgap"></div>')
+    else out.push(`<p>${mdInline(line)}</p>`)
+  }
+  if (inCode) out.push('</code></pre>')
+  closeList()
+  return out.join('')
+}
+
 function addNoteAt(point) {
   state.currentBoard.document.items.push({
     type: 'note', text: '', x: Math.round(point.x), y: Math.round(point.y), w: 220, h: 120
@@ -853,6 +1227,7 @@ function addNoteAt(point) {
   state.selectedBoard = new Set([idx])
   state.editingNote = idx
   renderBoard()
+  recordBoard()
 }
 
 function viewportCenterWorld() {
@@ -910,6 +1285,7 @@ function distributeSelected(axis) {
     for (const it of selected) { it.y = Math.round(cursor); cursor += it.h + gap }
   }
   renderBoard()
+  recordBoard()
 }
 
 function arrangeSelected(bySize) {
@@ -934,9 +1310,82 @@ function arrangeSelected(bySize) {
     x += w + GAP
   }
   renderBoard()
+  recordBoard()
+}
+
+function commitNoteEdit() {
+  // save the live textarea value before anything rebuilds the board DOM —
+  // mousedown handlers re-render before blur fires, destroying unsaved text
+  if (state.editingNote === null) return
+  const editor = $('board').querySelector('.noteEdit')
+  const item = state.currentBoard.document.items[state.editingNote]
+  if (editor && item && item.text !== editor.value) {
+    item.text = editor.value
+    recordBoard()
+  }
+}
+
+function boardSnapshot() {
+  return structuredClone({ title: state.currentBoard.title, items: state.currentBoard.document.items })
+}
+
+function resetBoardHistory() {
+  state.boardHistory = [boardSnapshot()]
+  state.boardFuture = []
+}
+
+function recordBoard() {
+  state.boardHistory.push(boardSnapshot())
+  if (state.boardHistory.length > 100) state.boardHistory.shift()
+  state.boardFuture = []
+  scheduleAutosave()
+}
+
+function applySnapshot(snap) {
+  state.currentBoard.title = snap.title
+  state.currentBoard.document.items = structuredClone(snap.items)
+  state.selectedBoard.clear()
+  state.editingNote = null
+  renderBoard()
+  scheduleAutosave()
+}
+
+function undoBoard() {
+  const history = state.boardHistory
+  if (!history || history.length < 2) return
+  state.boardFuture.push(history.pop())
+  applySnapshot(history[history.length - 1])
+}
+
+function redoBoard() {
+  const snap = state.boardFuture?.pop()
+  if (!snap) return
+  state.boardHistory.push(snap)
+  applySnapshot(snap)
+}
+
+let autosaveTimer
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer)
+  autosaveTimer = setTimeout(autoSaveBoard, 600)
+}
+
+async function autoSaveBoard() {
+  state.currentBoard.title = $('boardTitle').value || 'Untitled board'
+  state.currentBoard.document.viewport = state.canvas
+  const isNew = state.currentBoard.id == null
+  try {
+    const saved = await api('/api/boards', { method: 'POST', headers, body: JSON.stringify(state.currentBoard) })
+    state.currentBoard.id = saved.id  // keep the local document authoritative — edits may have landed mid-request
+    $('status').textContent = 'saved'
+    if (isNew) loadBoards()
+  } catch (err) {
+    $('status').textContent = `autosave failed: ${err.message}`
+  }
 }
 
 function renderBoard() {
+  commitNoteEdit()
   $('boardTitle').value = state.currentBoard.title || 'Untitled board'
   const items = state.currentBoard.document.items || []
   $('board').innerHTML = items.map((it, idx) => {
@@ -945,7 +1394,7 @@ function renderBoard() {
     if (it.type === 'note') {
       const body = state.editingNote === idx
         ? `<textarea class="noteEdit">${h(it.text)}</textarea>`
-        : h(it.text || 'Double-click to edit')
+        : renderMarkdown(it.text)
       return `<div class="boardItem note ${sel}" data-idx="${idx}" style="${style}">${body}<div class="rsz"></div></div>`
     }
     const url = it.media_type === 'video' ? mediaUrl(it) : previewUrl(it)
@@ -964,6 +1413,7 @@ function renderBoard() {
       item.ar = w / hgt
       item.h = Math.round(item.w / item.ar)
       el.style.height = item.h + 'px'
+      scheduleAutosave()
     }
     media.tagName === 'VIDEO' ? media.addEventListener('loadedmetadata', adopt) : media.addEventListener('load', adopt)
   })
@@ -971,8 +1421,7 @@ function renderBoard() {
   if (editor) {
     editor.focus()
     editor.onblur = () => {
-      const item = state.currentBoard.document.items[state.editingNote]
-      if (item) item.text = editor.value
+      commitNoteEdit()
       state.editingNote = null
       renderBoard()
     }
@@ -1009,12 +1458,22 @@ function makeBoardItemInteractive(el) {
       el.style.width = item.w + 'px'
       el.style.height = item.h + 'px'
     }
-    document.onmouseup = () => { document.onmousemove = null; document.onmouseup = null; renderBoard() }
+    document.onmouseup = () => {
+      document.onmousemove = null
+      document.onmouseup = null
+      renderBoard()
+      if (item.w !== startW || item.h !== startH) recordBoard()
+    }
   }
   el.onmousedown = event => {
     if (event.button !== 0 || event.target.closest('.rsz, .noteEdit')) return
     event.stopPropagation()
     event.preventDefault()
+    if (state.editingNote !== null && state.editingNote !== idx) {
+      commitNoteEdit()
+      state.editingNote = null
+      renderBoard()
+    }
     if (event.shiftKey) {
       state.selectedBoard.has(idx) ? state.selectedBoard.delete(idx) : state.selectedBoard.add(idx)
       renderBoard()
@@ -1036,7 +1495,7 @@ function makeBoardItemInteractive(el) {
         if (node) { node.style.left = items[i].x + 'px'; node.style.top = items[i].y + 'px' }
       }
     }
-    document.onmouseup = () => { document.onmousemove = null; document.onmouseup = null }
+    document.onmouseup = () => { document.onmousemove = null; document.onmouseup = null; if (moved) recordBoard() }
   }
 }
 
@@ -1057,9 +1516,12 @@ function alignSelected(edge) {
     if (edge === 'centerh') it.y = Math.round((minY + maxBottom) / 2 - it.h / 2)
   }
   renderBoard()
+  recordBoard()
 }
 
 function clearSelection() {
+  commitNoteEdit()
+  state.editingNote = null
   state.selectedBoard.clear()
   renderBoard()
 }
@@ -1071,6 +1533,7 @@ function deleteSelectedBoardItem() {
   state.selectedBoard.clear()
   state.editingNote = null
   renderBoard()
+  recordBoard()
 }
 
 function moveSelectedLayer(direction) {
@@ -1084,6 +1547,7 @@ function moveSelectedLayer(direction) {
   items.splice(next, 0, item)
   state.selectedBoard = new Set([next])
   renderBoard()
+  recordBoard()
 }
 
 function setCanvas(x, y, scale) {
@@ -1129,11 +1593,9 @@ function updateBoardControls() {
 }
 
 async function saveBoard() {
-  state.currentBoard.title = $('boardTitle').value || 'Untitled board'
-  state.currentBoard.document.viewport = state.canvas
-  state.currentBoard = await api('/api/boards', { method: 'POST', headers, body: JSON.stringify(state.currentBoard) })
+  clearTimeout(autosaveTimer)
+  await autoSaveBoard()
   await loadBoards()
-  $('status').textContent = `saved ${state.currentBoard.title}`
 }
 
 function formatBytes(bytes) {
@@ -1145,5 +1607,91 @@ function formatBytes(bytes) {
 }
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)) }
+
+function buildCommands() {
+  const c = []
+  const add = (name, run, kbd) => c.push({ name, run, kbd })
+  add('View: Masonry gallery', () => setView('masonry'))
+  add('View: Cards', () => setView('cards'))
+  add('View: File list', () => setView('list'))
+  add(state.drill ? 'Drill down: turn off' : 'Drill down: turn on', () => setDrill(!state.drill), 'D')
+  add(state.sidebarHidden ? 'Sidebar: show' : 'Sidebar: hide', () => setSidebarHidden(!state.sidebarHidden), 'F')
+  add(state.zen ? 'Zen mode: exit' : 'Zen mode: enter', () => setZen(!state.zen), 'Z')
+  add('Mode: Explorer only', () => setMode('explorer'), 'E')
+  add('Mode: Split view', () => setMode('split'), 'Esc')
+  add('Mode: Canvas only', () => setMode('canvas'), 'C')
+  add('Filter: everything', () => setTypeFilter(''))
+  add('Filter: images only', () => setTypeFilter('image'))
+  add('Filter: videos only', () => setTypeFilter('video'))
+  add('Sort: by name', () => setSort('name'))
+  add('Sort: newest first', () => setSort('date'))
+  add('Sort: by type', () => setSort('type'))
+  add('Sort: by size', () => setSort('size'))
+  add('Board: new board', () => $('newBoard').click())
+  add('Board: save board', saveBoard, '⌘S')
+  add('Board: add note', () => addNoteAt(viewportCenterWorld()), 'N')
+  add('Board: select all items', () => { state.selectedBoard = new Set(state.currentBoard.document.items.map((_, i) => i)); renderBoard() })
+  add('Board: arrange (pack)', () => arrangeSelected(false))
+  add('Board: arrange by size', () => arrangeSelected(true))
+  add('Board: delete selection', deleteSelectedBoardItem, '⌫')
+  add('New collection', newCollection)
+  add('Open settings', openSettings)
+  for (const r of state.roots) {
+    add(`Go to drive: ${r.name}`, () => selectFolder(r.name, ''))
+    add(`Rescan drive: ${r.name}`, () => api(`/api/scan/${encodeURIComponent(r.name)}`, { method: 'POST' }).then(pollScan))
+  }
+  return c
+}
+
+function openPalette() {
+  $('ctxMenu').hidden = true
+  $('bctx').hidden = true
+  $('tctx').hidden = true
+  $('palette').hidden = false
+  $('paletteInput').value = ''
+  renderPalette('')
+  $('paletteInput').focus()
+}
+
+function closePalette() {
+  $('palette').hidden = true
+}
+
+function renderPalette(query) {
+  const q = query.trim().toLowerCase()
+  const all = buildCommands()
+  let items
+  if (!q) items = all.slice(0, 14)
+  else {
+    items = all
+      .map(cmd => ({ cmd, pos: cmd.name.toLowerCase().indexOf(q) }))
+      .filter(x => x.pos >= 0)
+      .sort((a, b) => a.pos - b.pos)
+      .map(x => x.cmd)
+      .slice(0, 12)
+    items.push({ name: `Search files for “${query.trim()}”`, kbd: '⏎', run: () => {
+      state.filter = query.trim()
+      $('searchBox').value = query.trim()
+      resetGrid()
+    } })
+  }
+  state.palItems = items
+  state.palIndex = 0
+  $('paletteList').innerHTML = items.map((cmd, i) =>
+    `<div class="palRow ${i === 0 ? 'sel' : ''}" data-pi="${i}">${h(cmd.name)}${cmd.kbd ? `<kbd>${h(cmd.kbd)}</kbd>` : ''}</div>`).join('')
+}
+
+function movePalette(direction) {
+  if (!state.palItems.length) return
+  state.palIndex = clamp(state.palIndex + direction, 0, state.palItems.length - 1)
+  document.querySelectorAll('.palRow').forEach((row, i) => row.classList.toggle('sel', i === state.palIndex))
+  document.querySelector('.palRow.sel')?.scrollIntoView({ block: 'nearest' })
+}
+
+function runPalette(index) {
+  const cmd = state.palItems[index]
+  closePalette()
+  if (cmd) cmd.run()
+}
 
 init().catch(err => { $('status').textContent = err.message; console.error(err) })

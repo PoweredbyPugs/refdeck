@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RefDeck</title>
-  <link rel="stylesheet" href="/style.css?v=12" />
+  <link rel="stylesheet" href="/style.css?v=23" />
 </head>
 <body>
   <header>
@@ -32,11 +32,9 @@
   <div id="edgeLeft"></div>
   <main>
     <aside id="folders">
-      <h3>Folders</h3>
-      <select id="rootSelect"></select>
-      <button id="upButton">Up</button>
+      <h3>Drives</h3>
+      <div id="tree"></div>
       <div id="pathLabel"></div>
-      <div id="dirList"></div>
       <h3>Filter</h3>
       <div class="seg" id="typeSeg">
         <button data-type="">All</button>
@@ -46,7 +44,6 @@
       <div id="extFilters"></div>
       <h3>Collections</h3>
       <div id="collections"></div>
-      <div id="collectionDetail"></div>
       <div class="boardsSection">
         <h3>Boards</h3>
         <div id="boards"></div>
@@ -78,7 +75,6 @@
     <section id="boardPanel">
       <div id="boardToolbar">
         <input id="boardTitle" placeholder="Board title" />
-        <button id="addNote" class="ghost" title="Add note (N)">+ Note</button>
         <span class="vr"></span>
         <div class="seg" id="alignSeg">
           <button data-align="left" title="Align left edges">⇤</button>
@@ -103,10 +99,18 @@
       <div id="bctx" hidden></div>
     </section>
   </main>
+  <div id="palette" hidden>
+    <input id="paletteInput" placeholder="Type a command or search…" autocomplete="off" />
+    <div id="paletteList"></div>
+  </div>
+  <div id="tctx" hidden></div>
+  <div id="cpick" hidden></div>
   <div id="ctxMenu" hidden>
     <button data-ctx="preview">Preview</button>
     <button data-ctx="board">Add to board</button>
-    <button data-ctx="collect">Add to collection</button>
+    <button data-ctx="collect">Save to collection…</button>
+    <button data-ctx="uncollect">Remove from collection</button>
+    <button data-ctx="depth">Generate depth map</button>
     <button data-ctx="original">Open original</button>
   </div>
   <dialog id="settings">
@@ -126,6 +130,40 @@
       <div class="hint">Credentials are stored in RefDeck's local data folder on this machine.</div>
       <div id="mountError" class="hint"></div>
     </form>
+    <h3>Keyboard</h3>
+    <div class="hotkeys">
+      <div class="hkGroup">Anywhere</div>
+      <div class="hkRow"><kbd>/</kbd><span>command palette (also <kbd>⌘K</kbd>)</span></div>
+      <div class="hkRow"><kbd>E</kbd><span>explorer only</span></div>
+      <div class="hkRow"><kbd>C</kbd><span>canvas only</span></div>
+      <div class="hkRow"><kbd>Esc</kbd><span>back to split · exit zen</span></div>
+      <div class="hkRow"><kbd>Z</kbd><span>zen mode — hover top/left edges for UI</span></div>
+      <div class="hkRow"><kbd>F</kbd><span>show / hide sidebar</span></div>
+      <div class="hkRow"><kbd>D</kbd><span>toggle drill down</span></div>
+      <div class="hkGroup">Board</div>
+      <div class="hkRow"><kbd>⌘Z</kbd><span>undo (through autosaves)</span></div>
+      <div class="hkRow"><kbd>⌘⇧Z</kbd><span>redo</span></div>
+      <div class="hkRow"><kbd>⌘S</kbd><span>save now (boards also autosave)</span></div>
+      <div class="hkRow"><kbd>N</kbd><span>add markdown note</span></div>
+      <div class="hkRow"><kbd>⌫</kbd><span>delete selection</span></div>
+      <div class="hkRow"><kbd>[ ]</kbd><span>send backward / bring forward</span></div>
+      <div class="hkRow"><kbd>⌃drag</kbd><span>marquee select (or <kbd>⌘drag</kbd>)</span></div>
+      <div class="hkRow"><kbd>⇧click</kbd><span>add / remove from selection</span></div>
+      <div class="hkRow"><kbd>scroll</kbd><span>zoom canvas at cursor (10%–1000%)</span></div>
+      <div class="hkRow"><kbd>2×click</kbd><span>preview image · edit note</span></div>
+      <div class="hkGroup">Preview</div>
+      <div class="hkRow"><kbd>← →</kbd><span>previous / next</span></div>
+      <div class="hkRow"><kbd>scroll</kbd><span>zoom at cursor (also <kbd>⌃↑ ⌃↓</kbd> / <kbd>+ −</kbd>)</span></div>
+      <div class="hkRow"><kbd>drag</kbd><span>pan the image</span></div>
+      <div class="hkRow"><kbd>R ⇧R</kbd><span>rotate 90° cw / ccw</span></div>
+      <div class="hkRow"><kbd>H V</kbd><span>flip horizontal / vertical</span></div>
+      <div class="hkRow"><kbd>0</kbd><span>reset zoom, pan, rotation, flip</span></div>
+      <div class="hkRow"><kbd>1</kbd><span>original size — one image pixel per screen pixel</span></div>
+      <div class="hkRow"><kbd>M</kbd><span>depth map compare — drag the bar to scrub</span></div>
+      <div class="hkRow"><kbd>I</kbd><span>details panel</span></div>
+      <div class="hkRow"><kbd>Esc</kbd><span>close (stops video)</span></div>
+      <div class="hkRow"><kbd>R-click</kbd><span>full action menu — everywhere in the app</span></div>
+    </div>
   </dialog>
   <dialog id="preview">
     <div id="previewBody"></div>
@@ -136,13 +174,21 @@
       <button data-pv="next">Next <kbd>→</kbd></button>
       <button data-pv="zoomin">Zoom in <kbd>⌃↑ +</kbd></button>
       <button data-pv="zoomout">Zoom out <kbd>⌃↓ −</kbd></button>
-      <button data-pv="zoomreset">Reset zoom <kbd>0</kbd></button>
+      <button data-pv="zoomreset">Reset view <kbd>0</kbd></button>
+      <button data-pv="onesize">Original size (1:1) <kbd>1</kbd></button>
+      <button data-pv="rotcw">Rotate ⟳ <kbd>R</kbd></button>
+      <button data-pv="rotccw">Rotate ⟲ <kbd>⇧R</kbd></button>
+      <button data-pv="fliph">Flip horizontal <kbd>H</kbd></button>
+      <button data-pv="flipv">Flip vertical <kbd>V</kbd></button>
+      <button data-pv="depth">Depth map compare <kbd>M</kbd></button>
+      <button data-pv="depthcopy">Copy depth map</button>
+      <button data-pv="depthsave">Download depth map</button>
       <button data-pv="board">Add to board</button>
-      <button data-pv="collect">Add to collection</button>
+      <button data-pv="collect">Save to collection…</button>
       <button data-pv="original">Open original</button>
       <button data-pv="close">Close <kbd>Esc</kbd></button>
     </div>
   </dialog>
-  <script src="/app.js?v=12"></script>
+  <script src="/app.js?v=23"></script>
 </body>
 </html>
