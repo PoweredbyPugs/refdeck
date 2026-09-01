@@ -115,3 +115,20 @@ def test_depth_endpoint_guards(tmp_path, monkeypatch):
     assert client.get("/api/depth", params={"root": "Media", "path": "ghost.jpg"}).status_code == 404
     resp = client.get("/api/depth", params={"root": "Media", "path": "clip.mov"})
     assert resp.status_code == 400 and "images only" in resp.json()["detail"]
+
+
+def test_insp_indexed_and_served_as_full_res_jpeg(tmp_path, monkeypatch):
+    # Insta360 .insp panoramas are JPEG bytes under another name; they must be
+    # indexed as images and served untouched (full res, explicit image/jpeg)
+    # so the 360 viewer isn't fed a 2048px converted preview.
+    client, media = make_client(tmp_path, monkeypatch)
+    (media / "pano.insp").write_bytes(b"\xff\xd8fakejpeg")
+    client.post("/api/scan/Media")
+    client.app.state.scanner.wait("Media")
+    files = client.get("/api/files", params={"root": "Media", "recursive": 1, "type": "image"}).json()
+    assert "pano.insp" in [f["name"] for f in files["files"]]
+    for endpoint in ("/api/preview", "/api/media"):
+        resp = client.get(endpoint, params={"root": "Media", "path": "pano.insp"})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+        assert resp.content == b"\xff\xd8fakejpeg"

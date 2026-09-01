@@ -6,7 +6,7 @@ from typing import Dict
 # Explicit sets only — a mimetypes fallback classifies differently per OS
 # (macOS maps .ts TypeScript files to video/mp2t, indexing 60k+ source files).
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff",
-              ".heic", ".heif", ".psd"}
+              ".heic", ".heif", ".psd", ".insp"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts", ".m2ts"}
 
 

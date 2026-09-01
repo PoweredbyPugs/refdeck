@@ -23,6 +23,8 @@ const state = {
   contextIndex: null,
   pv: { scale: 1, x: 0, y: 0, rot: 0, flipX: false, flipY: false },
   pvDepth: { on: false, split: 0.5 },
+  pv360: null,
+  pv360Loading: false,
   masonryNext: 0,
   contextItem: null,
   filter: '',
@@ -258,6 +260,8 @@ async function init() {
     if (!$('preview').open) return
     if (event.key === 'ArrowRight' && !event.ctrlKey) { event.preventDefault(); previewNav(1) }
     if (event.key === 'ArrowLeft' && !event.ctrlKey) { event.preventDefault(); previewNav(-1) }
+    if (event.key === '3') { event.preventDefault(); pv360Toggle() }
+    if (state.pv360) return  // flat-image keys below would act on the hidden img
     if (event.ctrlKey && event.key === 'ArrowUp') { event.preventDefault(); pvZoom(1.25) }
     if (event.ctrlKey && event.key === 'ArrowDown') { event.preventDefault(); pvZoom(0.8) }
     if (event.key === '+' || event.key === '=') { event.preventDefault(); pvZoom(1.25) }
@@ -271,7 +275,12 @@ async function init() {
     if (event.key.toLowerCase() === 'm' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); toggleDepthCompare() }
     if (event.key === '/') { event.preventDefault(); $('preview').close(); openPalette() }
   })
+  $('preview').addEventListener('cancel', event => {
+    // first Esc leaves the 360 viewer, second closes the preview
+    if (state.pv360) { event.preventDefault(); pv360Destroy() }
+  })
   $('preview').addEventListener('close', () => {
+    pv360Destroy()
     $('previewBody').innerHTML = ''  // removes any <video>, stopping playback
     state.previewIndex = null
     state.previewItem = null
@@ -303,6 +312,7 @@ async function init() {
     if (action === 'fliph') pvFlip('x')
     if (action === 'flipv') pvFlip('y')
     if (action === 'onesize') pvOriginalSize()
+    if (action === 'pano') pv360Toggle()
     if (action === 'depth') toggleDepthCompare()
     if (action === 'depthcopy') copyDepthToClipboard()
     if (action === 'depthsave') downloadDepth()
@@ -314,10 +324,12 @@ async function init() {
     if (action === 'original') window.open(mediaUrl(normalizeExplorerItem(item)), '_blank')
   }
   $('previewBody').addEventListener('wheel', event => {
+    if (state.pv360) return  // Photo Sphere Viewer owns wheel/drag while active
     event.preventDefault()
     pvZoomAt(event.clientX, event.clientY, event.deltaY > 0 ? 0.9 : 1.1)
   }, { passive: false })
   $('previewBody').onmousedown = event => {
+    if (state.pv360) return
     if (event.button !== 0) return
     if (pvMedia()?.tagName === 'VIDEO' && state.pv.scale <= 1) return
     event.preventDefault()
@@ -688,6 +700,8 @@ function renderPreview(item) {
   const normalized = normalizeExplorerItem(item)
   state.previewItem = item
   state.pvDepth = { on: false, split: 0.5 }
+  pv360Destroy()
+  $('pvPanoBtn').hidden = true
   pvResetZoom()
   $('previewBody').innerHTML = normalized.media_type === 'video'
     ? `<video src="${mediaUrl(normalized)}" controls autoplay></video>`
@@ -695,10 +709,53 @@ function renderPreview(item) {
   renderPvDetails()
   const media = pvMedia()
   if (media) {
-    const update = () => { renderPvDetails(); pvApply() }
+    const update = () => { renderPvDetails(); pvApply(); $('pvPanoBtn').hidden = !pvIs360() }
     media.tagName === 'VIDEO' ? media.addEventListener('loadedmetadata', update) : media.addEventListener('load', update)
   }
   if (!$('preview').open) $('preview').showModal()
+}
+
+// --- 360 panoramas — equirectangular photos are exactly 2:1 ---
+
+function pvIs360() {
+  const media = pvMedia()
+  return !!media && media.tagName === 'IMG' && media.naturalWidth > 0
+    && Math.abs(media.naturalWidth - 2 * media.naturalHeight) <= 4
+}
+
+function pv360Destroy() {
+  if (state.pv360) { state.pv360.destroy(); state.pv360 = null }
+  document.getElementById('pv360')?.remove()
+  const media = pvMedia()
+  if (media) media.style.visibility = ''
+  if ($('preview').open && state.previewItem) $('status').textContent = 'ready'
+}
+
+async function pv360Toggle() {
+  if (state.pv360) { pv360Destroy(); return }
+  if (state.pv360Loading || !pvIs360()) return
+  const item = normalizeExplorerItem(state.previewItem)
+  const holder = document.createElement('div')
+  holder.id = 'pv360'
+  $('previewBody').appendChild(holder)
+  pvMedia().style.visibility = 'hidden'
+  $('status').textContent = 'loading 360 viewer…'
+  state.pv360Loading = true
+  try {
+    const { Viewer } = await import('/vendor/psv-core.module.js')
+    state.pv360 = new Viewer({
+      container: holder,
+      panorama: previewUrl(item),
+      navbar: ['zoom', 'fullscreen'],
+      loadingTxt: 'loading panorama…'
+    })
+    $('status').textContent = `360 — drag to look around · 3 or Esc exits`
+  } catch (err) {
+    $('status').textContent = `360 viewer failed: ${err.message || err}`
+    pv360Destroy()
+  } finally {
+    state.pv360Loading = false
+  }
 }
 
 function pvDetailsToggle() {

@@ -14,7 +14,9 @@ try:
 except ImportError:
     pass
 
-BROWSER_SAFE = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+BROWSER_SAFE = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".insp"}
+# extensions whose real content type mimetypes can't guess (.insp = Insta360 JPEG)
+MIME_OVERRIDES = {".insp": "image/jpeg"}
 
 
 def cache_key(path: Path) -> str:

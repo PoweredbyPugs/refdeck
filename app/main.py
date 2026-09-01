@@ -14,7 +14,7 @@ from .depth import generate_depth_map
 from .indexer import ScanManager
 from .media import MediaRoots, classify_media
 from .mounts import MountError, MountManager
-from .thumbs import make_preview, make_thumb, needs_conversion
+from .thumbs import MIME_OVERRIDES, make_preview, make_thumb, needs_conversion
 
 
 class CollectionIn(BaseModel):
@@ -126,7 +126,8 @@ def create_app(mount_runner=None) -> FastAPI:
 
     @app.get("/api/media")
     def api_media(root: str, path: str):
-        return FileResponse(resolve_file(root, path))
+        target = resolve_file(root, path)
+        return FileResponse(target, media_type=MIME_OVERRIDES.get(target.suffix.lower()))
 
     @app.get("/api/thumb")
     def api_thumb(root: str, path: str):
@@ -147,7 +148,7 @@ def create_app(mount_runner=None) -> FastAPI:
     def api_preview(root: str, path: str):
         target = resolve_file(root, path)
         if classify_media(target) == "video" or not needs_conversion(target):
-            return FileResponse(target)
+            return FileResponse(target, media_type=MIME_OVERRIDES.get(target.suffix.lower()))
         try:
             return FileResponse(make_preview(target, cache), media_type="image/jpeg")
         except Exception as exc:
