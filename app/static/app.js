@@ -426,6 +426,7 @@ function handleKeys(event) {
     $('status').textContent = state.showHidden ? 'showing hidden files' : 'hidden files concealed'
     return
   }
+  if (!mod && !event.shiftKey && key === 'a' && state.sel.size) { event.preventDefault(); hideGridSelection(); return }
   if (!mod && key === 'f') { event.preventDefault(); setSidebarHidden(!state.sidebarHidden) }
   if (!mod && key === 'z') { event.preventDefault(); setZen(!state.zen) }
   if (!mod && key === 'n') { event.preventDefault(); addNoteAt(viewportCenterWorld()) }
@@ -824,6 +825,33 @@ async function deleteGridSelection() {
   $('status').textContent = errors.length
     ? `deleted ${deleted} — ${errors.length} failed: ${errors[0]}`
     : `deleted ${deleted} — ⌘Z to undo`
+}
+
+// A with a selection: bulk hide — or unhide, if everything selected is hidden
+async function hideGridSelection() {
+  const indices = [...state.sel].filter(i => state.gridFiles[i])
+  if (!indices.length) return
+  const target = !indices.every(i => state.gridFiles[i].hidden)
+  const byRoot = new Map()
+  indices.forEach(i => {
+    const n = normalizeExplorerItem(state.gridFiles[i])
+    if (!byRoot.has(n.root)) byRoot.set(n.root, [])
+    byRoot.get(n.root).push(n.path)
+  })
+  let updated = 0
+  try {
+    for (const [root, paths] of byRoot) {
+      const res = await api('/api/files/hidden', { method: 'POST', headers, body: JSON.stringify({ root, paths, hidden: target }) })
+      updated += res.updated
+    }
+  } catch (err) {
+    $('status').textContent = `hide failed: ${err.message}`
+    return
+  }
+  indices.forEach(i => { if (state.gridFiles[i]) state.gridFiles[i].hidden = target ? 1 : 0 })
+  clearGridSel()
+  if (target && !state.showHidden && !state.collectionId) removeGridItems(indices)
+  $('status').textContent = target ? `hid ${updated} — ⇧H reveals hidden files` : `unhid ${updated}`
 }
 
 // hide deleted tiles in place — no reload, no scroll jump. gridFiles keeps
