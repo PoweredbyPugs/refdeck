@@ -191,6 +191,7 @@ async function init() {
     if (!itemEl) return
     const idx = +itemEl.dataset.idx
     const item = state.gridFiles[idx]
+    if (!item) return
     if (event.shiftKey) { event.preventDefault(); gridSelRange(idx); return }
     if (event.ctrlKey || event.metaKey) { event.preventDefault(); gridSelToggle(idx); return }
     const button = event.target.closest('button[data-action]')
@@ -669,6 +670,7 @@ function setDrill(on) {
 }
 
 function gridSelToggle(idx) {
+  if (!state.gridFiles[idx]) return
   if (state.sel.has(idx)) state.sel.delete(idx)
   else state.sel.add(idx)
   state.selAnchor = idx
@@ -680,7 +682,7 @@ function gridSelToggle(idx) {
 function gridSelRange(idx) {
   const from = state.selAnchor ?? idx
   const [a, b] = from < idx ? [from, idx] : [idx, from]
-  for (let i = a; i <= b; i++) state.sel.add(i)
+  for (let i = a; i <= b; i++) if (state.gridFiles[i]) state.sel.add(i)
   if (state.sel.size >= 3) state.selSticky = true
   syncGridSel()
 }
@@ -718,19 +720,23 @@ async function deleteGridSelection() {
   }
   if (!confirm(`Delete ${items.length} file${items.length === 1 ? '' : 's'}?`)) return
   const byRoot = new Map()
-  items.forEach(it => {
-    const n = normalizeExplorerItem(it)
-    if (!byRoot.has(n.root)) byRoot.set(n.root, [])
-    byRoot.get(n.root).push(n.path)
+  ;[...state.sel].forEach(i => {
+    if (!state.gridFiles[i]) return
+    const n = normalizeExplorerItem(state.gridFiles[i])
+    if (!byRoot.has(n.root)) byRoot.set(n.root, { paths: [], idxByPath: new Map() })
+    byRoot.get(n.root).paths.push(n.path)
+    byRoot.get(n.root).idxByPath.set(n.path, i)
   })
   let deleted = 0
   const errors = []
   const undoBatches = []
+  const hideIdx = []
   try {
-    for (const [root, paths] of byRoot) {
-      const res = await api('/api/files/delete', { method: 'POST', headers, body: JSON.stringify({ root, paths }) })
+    for (const [root, batch] of byRoot) {
+      const res = await api('/api/files/delete', { method: 'POST', headers, body: JSON.stringify({ root, paths: batch.paths }) })
       deleted += res.deleted.length
       if (res.deleted.length) undoBatches.push({ root, items: res.deleted })
+      res.deleted.forEach(d => hideIdx.push(batch.idxByPath.get(d.path)))
       errors.push(...Object.values(res.errors))
     }
   } catch (err) {
@@ -741,10 +747,24 @@ async function deleteGridSelection() {
     state.lastUndoScope = 'grid'
   }
   clearGridSel()
-  await resetGrid()
+  removeGridItems(hideIdx)
   $('status').textContent = errors.length
     ? `deleted ${deleted} — ${errors.length} failed: ${errors[0]}`
     : `deleted ${deleted} — ⌘Z to undo`
+}
+
+// hide deleted tiles in place — no reload, no scroll jump. gridFiles keeps
+// null holes so data-idx stays valid; gridOffset shrinks with the server's
+// row count so the next page doesn't skip files.
+function removeGridItems(indices) {
+  indices.forEach(i => {
+    if (i == null || !state.gridFiles[i]) return
+    state.gridFiles[i] = null
+    document.querySelector(`#grid [data-idx="${i}"]`)?.remove()
+    state.gridTotal--
+    state.gridOffset--
+  })
+  $('mediaCount').textContent = `${state.gridFiles.filter(Boolean).length}/${state.gridTotal} items`
 }
 
 async function undoGridDelete() {
@@ -780,6 +800,7 @@ function appendDOM(files, start) {
     const cols = grid.querySelectorAll('.mcol')
     if (!cols.length) return
     files.forEach((f, i) => {
+      if (!f) return  // deleted hole — keep data-idx aligned
       const frag = document.createElement('template')
       frag.innerHTML = `<div class="mItem" draggable="true" data-idx="${start + i}" title="${h(f.name)}"><img src="${thumbUrl(f)}" loading="lazy" /></div>`
       cols[state.masonryNext++ % cols.length].append(frag.content)
@@ -789,7 +810,7 @@ function appendDOM(files, start) {
   }
   const frag = document.createElement('template')
   if (state.view === 'list') {
-    frag.innerHTML = files.map((f, i) => `
+    frag.innerHTML = files.map((f, i) => !f ? '' : `
       <div class="lrow" draggable="true" data-idx="${start + i}">
         <img src="${thumbUrl(f)}" loading="lazy" />
         <span class="lname" title="${h(f.path)}">${h(f.name)}</span>
@@ -798,7 +819,7 @@ function appendDOM(files, start) {
         <span class="lmeta">${new Date(f.mtime * 1000).toLocaleDateString()}</span>
       </div>`).join('')
   } else {
-    frag.innerHTML = files.map((f, i) => `
+    frag.innerHTML = files.map((f, i) => !f ? '' : `
       <div class="card" draggable="true" data-idx="${start + i}">
         <img src="${thumbUrl(f)}" loading="lazy" />
         <div class="name" title="${h(f.path)}">${h(f.name)}</div>
@@ -1091,12 +1112,13 @@ async function downloadDepth() {
 
 async function previewNav(direction) {
   if (state.previewIndex === null) return
-  const next = state.previewIndex + direction
+  let next = state.previewIndex + direction
+  while (next >= 0 && next < state.gridFiles.length && !state.gridFiles[next]) next += direction  // skip deleted holes
   if (next < 0) return
   if (next >= state.gridFiles.length) {
     if (state.gridFiles.length >= state.gridTotal) return
     await loadMore()
-    if (next >= state.gridFiles.length) return
+    if (next >= state.gridFiles.length || !state.gridFiles[next]) return
   }
   state.previewIndex = next
   renderPreview(state.gridFiles[next])
