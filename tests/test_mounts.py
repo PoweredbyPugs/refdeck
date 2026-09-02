@@ -34,6 +34,9 @@ def test_add_list_remove_mount(tmp_path, monkeypatch):
     assert created["name"] == "NAS" and "password" not in created
     assert runner.calls[0][:3] == ["mount", "-t", "cifs"]
     assert "//othermac.local/Art" in runner.calls[0]
+    opts = runner.calls[0][runner.calls[0].index("-o") + 1]
+    assert opts.startswith("rw,")  # delete/restore writes .refdeck-trash on the share
+    assert "ro," not in opts
     assert any(r["name"] == "NAS" for r in client.get("/api/roots").json())
     listed = client.get("/api/mounts").json()
     assert listed[0]["online"] is True and "password" not in listed[0]

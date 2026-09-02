@@ -33,7 +33,8 @@ class MountManager:
         target = self.base / record["name"]
         target.mkdir(parents=True, exist_ok=True)
         source = f"//{record['server']}/{record['share']}"
-        opts = "ro,iocharset=utf8"
+        # rw: delete/restore moves files into <share>/.refdeck-trash
+        opts = "rw,iocharset=utf8"
         if record.get("username"):
             opts += f",username={record['username']},password={record.get('password', '')}"
         else:
