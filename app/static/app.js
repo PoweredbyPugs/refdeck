@@ -14,6 +14,8 @@ const state = {
   gridUndo: [],
   lastUndoScope: 'board',
   showHidden: false,
+  onlyHidden: false,
+  sortDir: '',
   cctxId: null,
   typeFilter: '',
   extActive: new Set(),
@@ -102,7 +104,9 @@ async function init() {
     clearTimeout(searchTimer)
     searchTimer = setTimeout(resetGrid, 250)
   }
-  $('sortSelect').onchange = event => { state.sort = event.target.value; resetGrid() }
+  $('sortSelect').onchange = event => { state.sort = event.target.value; state.sortDir = ''; syncSortDir(); resetGrid() }
+  $('sortDir').onclick = () => { state.sortDir = effectiveSortDir() === 'asc' ? 'desc' : 'asc'; syncSortDir(); resetGrid() }
+  syncSortDir()
   $('drillToggle').onclick = () => setDrill(!state.drill)
   $('drillToggle').classList.toggle('active', state.drill)
   document.querySelectorAll('#typeSeg button').forEach(b => b.onclick = () => setTypeFilter(b.dataset.type))
@@ -226,7 +230,7 @@ async function init() {
       ? [...state.sel].sort((a, b) => a - b).map(i => state.gridFiles[i]).filter(Boolean)
       : [item]
     if (button.dataset.ctx === 'preview') openPreviewAt(state.contextIndex)
-    if (button.dataset.ctx === 'board') targets.forEach(t => addToBoard(t))
+    if (button.dataset.ctx === 'board') addManyToBoard(targets)
     if (button.dataset.ctx === 'collect') openCollectionPicker(event, multi ? targets : item)
     if (button.dataset.ctx === 'uncollect') removeFromCollection(item)
     if (button.dataset.ctx === 'depth') generateDepthFor(item)
@@ -286,7 +290,11 @@ async function init() {
   $('grid').addEventListener('dragstart', event => {
     const itemEl = event.target.closest('[data-idx]')
     if (!itemEl) return
-    event.dataTransfer.setData('application/json', JSON.stringify(normalizeExplorerItem(state.gridFiles[+itemEl.dataset.idx])))
+    const idx = +itemEl.dataset.idx
+    // dragging a selected tile drags the whole selection
+    const indices = state.sel.has(idx) ? [...state.sel].sort((a, b) => a - b) : [idx]
+    const items = indices.map(i => state.gridFiles[i]).filter(Boolean).map(normalizeExplorerItem)
+    event.dataTransfer.setData('application/json', JSON.stringify(items.length === 1 ? items[0] : items))
     event.dataTransfer.effectAllowed = 'copy'
   })
   let resizeTimer
@@ -419,9 +427,19 @@ function handleKeys(event) {
   if (!mod && key === 'c') { event.preventDefault(); setMode(state.mode === 'canvas' ? 'split' : 'canvas') }
   if (!mod && key === 'e') { event.preventDefault(); setMode(state.mode === 'explorer' ? 'split' : 'explorer') }
   if (!mod && key === 'd') { event.preventDefault(); setDrill(!state.drill) }
+  // event.code, not key: macOS composes ⌥⇧A into "Å" so event.key is useless here
+  if (!event.metaKey && !event.ctrlKey && event.altKey && event.shiftKey && event.code === 'KeyA') {
+    event.preventDefault()
+    state.onlyHidden = !state.onlyHidden
+    if (state.onlyHidden) state.showHidden = false
+    resetGrid()
+    $('status').textContent = state.onlyHidden ? 'showing ONLY hidden files — ⇧⌥A exits' : 'hidden files concealed'
+    return
+  }
   if (!mod && event.shiftKey && key === 'h') {
     event.preventDefault()
     state.showHidden = !state.showHidden
+    state.onlyHidden = false
     resetGrid()
     $('status').textContent = state.showHidden ? 'showing hidden files' : 'hidden files concealed'
     return
@@ -681,7 +699,9 @@ async function loadMore() {
     const params = new URLSearchParams({
       root: state.root, path: state.path, recursive: state.drill ? '1' : '0',
       query: state.filter.trim(), sort: state.sort, limit: PAGE, offset: state.gridOffset,
-      type: state.typeFilter, exts, hidden: state.showHidden ? '1' : '0'
+      type: state.typeFilter, exts,
+      hidden: state.onlyHidden ? '2' : state.showHidden ? '1' : '0',
+      direction: state.sortDir
     })
     const page = await api(`/api/files?${params}`)
     state.gridTotal = page.total
@@ -719,8 +739,21 @@ function setTypeFilter(type) {
 
 function setSort(sort) {
   state.sort = sort
+  state.sortDir = ''
   $('sortSelect').value = sort
+  syncSortDir()
   resetGrid()
+}
+
+const SORT_DEFAULT_DIR = { name: 'asc', date: 'desc', size: 'desc', type: 'asc' }
+
+function effectiveSortDir() {
+  return state.sortDir || SORT_DEFAULT_DIR[state.sort] || 'asc'
+}
+
+function syncSortDir() {
+  $('sortDir').textContent = effectiveSortDir() === 'asc' ? '↑' : '↓'
+  $('sortDir').title = effectiveSortDir() === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending'
 }
 
 function renderExtFilters() {
@@ -850,8 +883,62 @@ async function hideGridSelection() {
   }
   indices.forEach(i => { if (state.gridFiles[i]) state.gridFiles[i].hidden = target ? 1 : 0 })
   clearGridSel()
-  if (target && !state.showHidden && !state.collectionId) removeGridItems(indices)
+  // tiles leave the view when they no longer match it: hidden while concealed,
+  // or unhidden while in only-hidden mode
+  const conceal = target ? (!state.showHidden && !state.onlyHidden) : state.onlyHidden
+  if (conceal && !state.collectionId) removeGridItems(indices)
   $('status').textContent = target ? `hid ${updated} — ⇧H reveals hidden files` : `unhid ${updated}`
+}
+
+// palette: move the grid selection to another folder — works from a
+// collection view and across drives; collections follow server-side
+async function moveGridSelection() {
+  const indices = [...state.sel].sort((a, b) => a - b).filter(i => state.gridFiles[i])
+  if (!indices.length) return
+  const dest = prompt('Move to (Drive/folder/subfolder)?', state.path ? `${state.root}/${state.path}` : state.root)
+  if (dest === null) return
+  const [destRoot, ...rest] = dest.split('/').filter(Boolean)
+  const destDir = rest.join('/')
+  if (!state.roots.some(r => r.name === destRoot)) {
+    alert(`Unknown drive “${destRoot || ''}” — the destination must start with one of: ${state.roots.map(r => r.name).join(', ')}`)
+    return
+  }
+  const byRoot = new Map()
+  indices.forEach(i => {
+    const n = normalizeExplorerItem(state.gridFiles[i])
+    if (!byRoot.has(n.root)) byRoot.set(n.root, [])
+    byRoot.get(n.root).push(n.path)
+  })
+  let moved = 0
+  const errors = []
+  try {
+    for (const [root, paths] of byRoot) {
+      const res = await api('/api/files/move', {
+        method: 'POST', headers,
+        body: JSON.stringify({ root, paths, dest_root: destRoot, dest_dir: destDir })
+      })
+      moved += res.moved.length
+      errors.push(...Object.values(res.errors))
+    }
+  } catch (err) {
+    errors.push(err.message)
+  }
+  // the destination chain may contain brand-new folders — drop cached listings
+  let acc = ''
+  state.treeChildren.delete(treeKey(destRoot, ''))
+  for (const part of destDir.split('/').filter(Boolean)) {
+    acc = acc ? `${acc}/${part}` : part
+    state.treeChildren.delete(treeKey(destRoot, acc))
+  }
+  await ensureChildren(destRoot, '')
+  renderTree()
+  clearGridSel()
+  if (state.collectionId) { await loadCollections(); renderCollectionGrid() }
+  else await resetGrid()
+  if (!moved && errors.length) alert(`Move failed: ${errors[0]}`)
+  $('status').textContent = errors.length
+    ? `moved ${moved} — ${errors.length} failed: ${errors[0]}`
+    : `moved ${moved} to ${destRoot}${destDir ? '/' + destDir : ''}`
 }
 
 // hide deleted tiles in place — no reload, no scroll jump. gridFiles keeps
@@ -1095,8 +1182,9 @@ async function pvToggleHidden() {
   }
   item.hidden = target ? 1 : 0
   renderPvDetails()
-  if (target && !state.showHidden && !state.collectionId && state.previewIndex !== null) {
-    removeGridItems([state.previewIndex])  // concealed from the explorer the moment it's hidden
+  const conceal = target ? (!state.showHidden && !state.onlyHidden) : state.onlyHidden
+  if (conceal && !state.collectionId && state.previewIndex !== null) {
+    removeGridItems([state.previewIndex])  // no longer matches the current view
   }
   $('status').textContent = target ? 'hidden — ⇧H reveals hidden files' : 'visible'
 }
@@ -1307,6 +1395,26 @@ function renderCollections() {
     </div>`).join('') || '<div class="hint">Right-click any file → Save to collection.</div>'
   document.querySelectorAll('[data-collectionid]').forEach(row => {
     row.onclick = () => openCollection(+row.dataset.collectionid)
+    row.ondragover = event => { event.preventDefault(); row.classList.add('dropTarget') }
+    row.ondragleave = () => row.classList.remove('dropTarget')
+    row.ondrop = async event => {
+      event.preventDefault()
+      row.classList.remove('dropTarget')
+      const raw = event.dataTransfer.getData('application/json')
+      if (!raw) return
+      let items
+      try { items = [].concat(JSON.parse(raw)) } catch { return }
+      const cid = +row.dataset.collectionid
+      for (const n of items) {
+        await api(`/api/collections/${cid}/items`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ path: `${n.root}/${n.path}`, media_type: n.media_type })
+        })
+      }
+      await loadCollections()
+      if (state.collectionId === cid) renderCollectionGrid()
+      $('status').textContent = items.length > 1 ? `added ${items.length} to collection` : 'added to collection'
+    }
     row.oncontextmenu = event => {
       event.preventDefault()
       state.cctxId = +row.dataset.collectionid
@@ -1358,6 +1466,9 @@ async function removeFromCollection(item) {
 
 function openCollectionPicker(event, item) {
   if (!item) return
+  // the opening click must not bubble to the document-level menu hider,
+  // which would close #cpick in the same dispatch that opened it
+  event.stopPropagation()
   state.pickItem = item
   const menu = $('cpick')
   menu.innerHTML = state.collections.map(c =>
@@ -1462,7 +1573,10 @@ function setupBoardViewport() {
     board.classList.remove('dropTarget')
     const raw = event.dataTransfer.getData('application/json')
     if (!raw) return
-    try { addToBoard(JSON.parse(raw), screenToWorld(event.clientX, event.clientY)) } catch { return }
+    try {
+      const parsed = JSON.parse(raw)
+      addManyToBoard(Array.isArray(parsed) ? parsed : [parsed], screenToWorld(event.clientX, event.clientY))
+    } catch { return }
   }
   viewport.onwheel = event => {
     event.preventDefault()
@@ -1513,32 +1627,46 @@ function startMarquee(event, viewport) {
 }
 
 function addToBoard(item, point = null) {
-  const normalized = normalizeExplorerItem(item)
+  addManyToBoard([item], point)
+}
+
+// one render + one history entry for the whole batch — per-item renderBoard
+// recreated every <video> on the board N times and froze multi-video adds
+function addManyToBoard(items, point = null) {
+  if (!items.length) return
+  const docItems = state.currentBoard.document.items
+  const first = docItems.length
   const drop = point || { x: 80 + Math.random() * 160, y: 80 + Math.random() * 120 }
-  const boardItem = {
-    root: normalized.root,
-    path: normalized.path,
-    media_type: normalized.media_type,
-    name: normalized.name,
-    x: Math.round(drop.x),
-    y: Math.round(drop.y),
-    w: 260,
-    h: 190
-  }
-  state.currentBoard.document.items.push(boardItem)
-  state.selectedBoard = new Set([state.currentBoard.document.items.length - 1])
-  fetchRatio(boardItem)
+  items.forEach((item, i) => {
+    const normalized = normalizeExplorerItem(item)
+    docItems.push({
+      root: normalized.root,
+      path: normalized.path,
+      media_type: normalized.media_type,
+      name: normalized.name,
+      x: Math.round(drop.x + i * 28),
+      y: Math.round(drop.y + i * 28),
+      w: 260,
+      h: 190
+    })
+  })
+  state.selectedBoard = new Set(items.map((_, i) => first + i))
   renderBoard()
   recordBoard()
+  docItems.slice(first).forEach(fetchRatio)
 }
 
 function fetchRatio(item) {
   if (item.ar) return
   const apply = (w, hgt) => {
-    if (!w || !hgt) return
+    if (!w || !hgt || item.ar) return
     item.ar = w / hgt
     item.h = Math.round(item.w / item.ar)
-    renderBoard()
+    // patch the node in place — a full renderBoard here would refetch every
+    // media element on the board once per arriving ratio
+    const idx = state.currentBoard.document.items.indexOf(item)
+    const node = $('board').querySelector(`[data-idx="${idx}"]`)
+    if (node) node.style.height = item.h + 'px'
     scheduleAutosave()
   }
   if (item.media_type === 'video') {
@@ -1776,7 +1904,11 @@ function renderBoard() {
       return `<div class="boardItem note ${sel}" data-idx="${idx}" style="${style}">${body}<div class="rsz"></div></div>`
     }
     const url = it.media_type === 'video' ? mediaUrl(it) : previewUrl(it)
-    const media = it.media_type === 'video' ? `<video src="${url}" muted loop></video>` : `<img src="${url}" draggable="false" />`
+    // poster + metadata-only preload: board videos cost about as much as
+    // images, instead of each fetching full video data on every render
+    const media = it.media_type === 'video'
+      ? `<video src="${url}" preload="metadata" poster="${thumbUrl(it)}" muted loop></video>`
+      : `<img src="${url}" draggable="false" />`
     return `<div class="boardItem media ${sel}" data-idx="${idx}" style="${style}" title="${h(it.name || it.path)}">${media}<div class="rsz"></div></div>`
   }).join('')
   document.querySelectorAll('.boardItem').forEach(el => makeBoardItemInteractive(el))
@@ -1989,6 +2121,10 @@ function clamp(value, min, max) { return Math.max(min, Math.min(max, value)) }
 function buildCommands() {
   const c = []
   const add = (name, run, kbd) => c.push({ name, run, kbd })
+  if (state.sel.size) {
+    const n = state.sel.size
+    add(`Move ${n} selected file${n === 1 ? '' : 's'} to folder…`, moveGridSelection)
+  }
   add('View: Masonry gallery', () => setView('masonry'))
   add('View: Cards', () => setView('cards'))
   add('View: File list', () => setView('list'))
@@ -2005,6 +2141,7 @@ function buildCommands() {
   add('Sort: newest first', () => setSort('date'))
   add('Sort: by type', () => setSort('type'))
   add('Sort: by size', () => setSort('size'))
+  add(`Sort: flip direction (now ${effectiveSortDir() === 'asc' ? 'ascending' : 'descending'})`, () => $('sortDir').click())
   add('Board: new board', () => $('newBoard').click())
   add('Board: save board', saveBoard, '⌘S')
   add('Board: add note', () => addNoteAt(viewportCenterWorld()), 'N')

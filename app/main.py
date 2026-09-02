@@ -45,6 +45,13 @@ class HiddenIn(BaseModel):
     hidden: bool
 
 
+class MoveIn(BaseModel):
+    root: str
+    paths: list[str]
+    dest_root: str
+    dest_dir: str = ""
+
+
 class RestoreItem(BaseModel):
     path: str
     trash: str
@@ -147,13 +154,16 @@ def create_app(mount_runner=None) -> FastAPI:
     @app.get("/api/files")
     def api_files(root: str, path: str = "", recursive: int = 0, query: str = "",
                   sort: str = "name", limit: int = 200, offset: int = 0,
-                  type: str = "", exts: str = "", hidden: int = 0):
+                  type: str = "", exts: str = "", hidden: int = 0, direction: str = ""):
         if root not in roots.roots:
             raise HTTPException(status_code=400, detail=f"unknown root: {root}")
         ext_list = [e.strip().lstrip(".").lower() for e in exts.split(",") if e.strip()]
+        # hidden: 0 = exclude hidden files, 1 = include them, 2 = only hidden
         return db.query_files(root, dir=path, recursive=bool(recursive), query=query,
                               sort=sort, limit=min(limit, 500), offset=max(offset, 0),
-                              media_type=type, exts=ext_list, include_hidden=bool(hidden))
+                              media_type=type, exts=ext_list,
+                              include_hidden=hidden == 1, only_hidden=hidden == 2,
+                              direction=direction)
 
     @app.post("/api/files/hidden")
     def api_set_hidden(payload: HiddenIn):
@@ -226,6 +236,64 @@ def create_app(mount_runner=None) -> FastAPI:
             db.remove_files(payload.root, deleted_files)
         purge_trash(root_base, TRASH_TTL_SECONDS)
         return {"deleted": deleted, "errors": errors}
+
+    @app.post("/api/files/move")
+    def api_move_files(payload: MoveIn):
+        for r in (payload.root, payload.dest_root):
+            if r not in roots.roots:
+                raise HTTPException(status_code=400, detail=f"unknown root: {r}")
+        try:
+            dest_base = roots.resolve(payload.dest_root, payload.dest_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        was_hidden = db.hidden_paths(payload.root, payload.paths)
+        moved: list[dict] = []
+        errors: dict[str, str] = {}
+        entries: list[dict] = []
+        removed: list[str] = []
+        renames: dict[str, str] = {}
+        hidden_dest: list[str] = []
+        for rel in payload.paths:
+            try:
+                target = roots.resolve(payload.root, rel)
+                if not target.is_file():
+                    raise ValueError("file not found")
+                dest = dest_base / target.name
+                if dest == target:
+                    raise ValueError("already there")
+                dest_base.mkdir(parents=True, exist_ok=True)
+                base, n = dest, 1
+                while dest.exists():
+                    dest = base.with_name(f"{base.stem}-{n}{base.suffix}")
+                    n += 1
+                shutil.move(str(target), str(dest))
+                new_rel = dest.relative_to(roots.resolve(payload.dest_root)).as_posix()
+                stat = dest.stat()
+                entries.append({
+                    "path": new_rel,
+                    "name": dest.name,
+                    "dir": new_rel.rsplit("/", 1)[0] if "/" in new_rel else "",
+                    "media_type": classify_media(dest) or "",
+                    "size": stat.st_size,
+                    "mtime": int(stat.st_mtime),
+                })
+                removed.append(rel)
+                renames[f"{payload.root}/{rel}"] = f"{payload.dest_root}/{new_rel}"
+                if rel in was_hidden:
+                    hidden_dest.append(new_rel)
+                moved.append({"path": rel, "to": new_rel})
+            except (ValueError, OSError) as exc:
+                errors[rel] = str(exc)
+        if removed:
+            db.remove_files(payload.root, removed)
+        media_entries = [e for e in entries if e["media_type"]]
+        if media_entries:
+            db.upsert_files(payload.dest_root, media_entries)
+        if hidden_dest:
+            db.set_hidden(payload.dest_root, hidden_dest, True)
+        if renames:
+            db.rewrite_collection_paths(renames)  # collections must follow moved files
+        return {"moved": moved, "errors": errors}
 
     @app.post("/api/files/restore")
     def api_restore_files(payload: RestoreIn):

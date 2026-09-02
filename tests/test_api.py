@@ -267,3 +267,84 @@ def test_insp_indexed_and_served_as_full_res_jpeg(tmp_path, monkeypatch):
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "image/jpeg"
         assert resp.content == b"\xff\xd8fakejpeg"
+
+
+def test_files_sort_direction_toggle(tmp_path, monkeypatch):
+    import os
+    client, media = make_client(tmp_path, monkeypatch, tree=False)
+    for i, name in enumerate(["a.jpg", "b.jpg", "c.jpg"]):
+        p = media / name
+        p.write_bytes(b"x" * (i + 1) * 10)
+        os.utime(p, (1_000_000 + i, 1_000_000 + i))
+    client.post("/api/scan/Media")
+    client.app.state.scanner.wait("Media")
+    names = lambda r: [f["name"] for f in r.json()["files"]]
+    assert names(client.get("/api/files", params={"root": "Media", "sort": "date"})) == \
+        ["c.jpg", "b.jpg", "a.jpg"]  # default for date stays newest-first
+    assert names(client.get("/api/files", params={"root": "Media", "sort": "date", "direction": "asc"})) == \
+        ["a.jpg", "b.jpg", "c.jpg"]
+    assert names(client.get("/api/files", params={"root": "Media", "sort": "name", "direction": "desc"})) == \
+        ["c.jpg", "b.jpg", "a.jpg"]
+    assert names(client.get("/api/files", params={"root": "Media", "sort": "size", "direction": "asc"})) == \
+        ["a.jpg", "b.jpg", "c.jpg"]
+    assert names(client.get("/api/files", params={"root": "Media", "sort": "size", "direction": "bogus"})) == \
+        ["c.jpg", "b.jpg", "a.jpg"]  # junk direction falls back to the key's default
+
+
+def test_files_hidden_only_mode(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    client.post("/api/files/hidden", json={"root": "Media", "paths": ["top.jpg"], "hidden": True})
+    only = client.get("/api/files", params={"root": "Media", "recursive": 1, "hidden": 2}).json()
+    assert [f["path"] for f in only["files"]] == ["top.jpg"]
+    assert only["total"] == 1
+
+
+def test_move_files_updates_index_collections_and_hidden(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    col = client.post("/api/collections", json={"title": "refs"}).json()
+    client.post(f"/api/collections/{col['id']}/items",
+                json={"path": "Media/top.jpg", "media_type": "image"})
+    client.post("/api/files/hidden", json={"root": "Media", "paths": ["top.jpg"], "hidden": True})
+    res = client.post("/api/files/move", json={
+        "root": "Media", "paths": ["top.jpg"], "dest_root": "Media", "dest_dir": "sub"}).json()
+    assert res["moved"] == [{"path": "top.jpg", "to": "sub/top.jpg"}]
+    assert res["errors"] == {}
+    assert not (media / "top.jpg").exists()
+    assert (media / "sub" / "top.jpg").is_file()
+    files = client.get("/api/files",
+                       params={"root": "Media", "path": "sub", "hidden": 1}).json()["files"]
+    by_path = {f["path"]: f for f in files}
+    assert set(by_path) == {"sub/nested.png", "sub/top.jpg"}
+    assert by_path["sub/top.jpg"]["hidden"] == 1  # hidden flag follows the file
+    items = client.get("/api/collections").json()[0]["items"]
+    assert items[0]["path"] == "Media/sub/top.jpg"  # collections follow the move
+    # destination folders are created on demand
+    res = client.post("/api/files/move", json={
+        "root": "Media", "paths": ["sub/nested.png"],
+        "dest_root": "Media", "dest_dir": "gallery/best"}).json()
+    assert res["moved"] == [{"path": "sub/nested.png", "to": "gallery/best/nested.png"}]
+    assert (media / "gallery" / "best" / "nested.png").is_file()
+
+
+def test_move_collision_and_guards(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    (media / "sub" / "top.jpg").write_bytes(b"other")
+    client.post("/api/scan/Media")
+    client.app.state.scanner.wait("Media")
+    res = client.post("/api/files/move", json={
+        "root": "Media", "paths": ["top.jpg"], "dest_root": "Media", "dest_dir": "sub"}).json()
+    assert res["moved"] == [{"path": "top.jpg", "to": "sub/top-1.jpg"}]
+    assert (media / "sub" / "top-1.jpg").read_bytes() == b"fake"
+    assert client.post("/api/files/move", json={
+        "root": "Nope", "paths": ["x"], "dest_root": "Media", "dest_dir": ""}).status_code == 400
+    assert client.post("/api/files/move", json={
+        "root": "Media", "paths": ["x"], "dest_root": "Nope", "dest_dir": ""}).status_code == 400
+    assert client.post("/api/files/move", json={
+        "root": "Media", "paths": ["sub/nested.png"],
+        "dest_root": "Media", "dest_dir": "../out"}).status_code == 400
+    bad = client.post("/api/files/move", json={
+        "root": "Media", "paths": ["../etc/passwd", "sub/nested.png"],
+        "dest_root": "Media", "dest_dir": "sub"}).json()
+    assert "escapes root" in bad["errors"]["../etc/passwd"]
+    assert "already there" in bad["errors"]["sub/nested.png"]
+    assert bad["moved"] == []

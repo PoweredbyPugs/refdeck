@@ -7,7 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="stylesheet" href="/style.css?v=34" />
+  <link rel="stylesheet" href="/style.css?v=35" />
   <link rel="stylesheet" href="/vendor/psv-core.css" />
   <script type="importmap">{ "imports": { "three": "/vendor/three.module.js" } }</script>
 </head>
@@ -65,10 +65,11 @@
         <input id="searchBox" placeholder="Search…" />
         <select id="sortSelect">
           <option value="name">Name</option>
-          <option value="date">Newest</option>
+          <option value="date">Date</option>
           <option value="type">Type</option>
           <option value="size">Size</option>
         </select>
+        <button id="sortDir" title="Toggle ascending / descending">↑</button>
         <span id="mediaCount"></span>
       </div>
       <div id="gridScroll">
@@ -154,6 +155,8 @@
       <div class="hkRow"><kbd>Esc</kbd><span>clear selection</span></div>
       <div class="hkRow"><kbd>A</kbd><span>hide selection (unhides if all selected are hidden)</span></div>
       <div class="hkRow"><kbd>⇧H</kbd><span>show / conceal hidden files (per-file flag via preview details)</span></div>
+      <div class="hkRow"><kbd>⇧⌥A</kbd><span>show only hidden files</span></div>
+      <div class="hkRow"><kbd>drag</kbd><span>tile → board or collection row (selected tile drags the whole selection)</span></div>
       <div class="hkGroup">Board</div>
       <div class="hkRow"><kbd>⌘Z</kbd><span>undo (through autosaves)</span></div>
       <div class="hkRow"><kbd>⌘⇧Z</kbd><span>redo</span></div>
@@ -209,6 +212,6 @@
       <button data-pv="close">Close <kbd>Esc</kbd></button>
     </div>
   </dialog>
-  <script src="/app.js?v=34"></script>
+  <script src="/app.js?v=35"></script>
 </body>
 </html>

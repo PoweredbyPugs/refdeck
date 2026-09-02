@@ -148,9 +148,12 @@ class RefDeckDB:
     def query_files(self, root: str, dir: str = "", recursive: bool = False, query: str = "",
                     sort: str = "name", limit: int = 200, offset: int = 0,
                     media_type: str = "", exts: list[str] | None = None,
-                    include_hidden: bool = False) -> dict:
+                    include_hidden: bool = False, only_hidden: bool = False,
+                    direction: str = "") -> dict:
         where, params = ["root=?"], [root]
-        if not include_hidden:
+        if only_hidden:
+            where.append("hidden=1")
+        elif not include_hidden:
             where.append("hidden=0")
         if recursive:
             if dir:
@@ -169,8 +172,13 @@ class RefDeckDB:
         if exts:
             where.append("(" + " or ".join("name like ?" for _ in exts) + ")")
             params += [f"%.{e}" for e in exts]
-        order = {"name": "name collate nocase", "date": "mtime desc", "size": "size desc",
-                 "type": "media_type, name collate nocase"}.get(sort, "name collate nocase")
+        col = {"name": "name collate nocase", "date": "mtime", "size": "size",
+               "type": "media_type"}.get(sort, "name collate nocase")
+        if direction not in ("asc", "desc"):
+            direction = {"date": "desc", "size": "desc"}.get(sort, "asc")
+        order = f"{col} {direction}"
+        if sort == "type":
+            order += ", name collate nocase"
         clause = " and ".join(where)
         with self.connect() as con:
             total = con.execute(f"select count(*) from files where {clause}", params).fetchone()[0]
@@ -198,6 +206,22 @@ class RefDeckDB:
                                   [1 if hidden else 0, root, *chunk])
                 updated += cur.rowcount
         return updated
+
+    def hidden_paths(self, root: str, paths: list[str]) -> set[str]:
+        out: set[str] = set()
+        with self.connect() as con:
+            for i in range(0, len(paths), 500):
+                chunk = paths[i:i + 500]
+                marks = ",".join("?" for _ in chunk)
+                out.update(r["path"] for r in con.execute(
+                    f"select path from files where root=? and hidden=1 and path in ({marks})",
+                    [root, *chunk]))
+        return out
+
+    def rewrite_collection_paths(self, renames: dict[str, str]) -> None:
+        with self.connect() as con:
+            for old, new in renames.items():
+                con.execute("update collection_items set path=? where path=?", (new, old))
 
     def count_hidden(self, root: str, paths: list[str]) -> tuple[int, int]:
         matched = hidden = 0
