@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from .db import RefDeckDB
 from .depth import generate_depth_map
-from .indexer import ScanManager
+from .indexer import ScanManager, walk_media
 from .media import MediaRoots, classify_media
 from .mounts import MountError, MountManager
 from .thumbs import MIME_OVERRIDES, make_preview, make_thumb, needs_conversion
@@ -184,10 +184,16 @@ def create_app(mount_runner=None) -> FastAPI:
         batch_dir = trash / str(int(time.time() * 1000))
         deleted: list[dict] = []
         errors: dict[str, str] = {}
+        deleted_files: list[str] = []
         for rel in payload.paths:
             try:
                 target = roots.resolve(payload.root, rel)
-                if not target.is_file():
+                if target == roots.resolve(payload.root):
+                    raise ValueError("cannot delete the drive root")
+                if target.name.startswith("."):
+                    raise ValueError("hidden files are not managed by RefDeck")
+                is_dir = target.is_dir()
+                if not is_dir and not target.is_file():
                     raise ValueError("file not found")
                 dest = batch_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -197,10 +203,14 @@ def create_app(mount_runner=None) -> FastAPI:
                     n += 1
                 shutil.move(str(target), str(dest))
                 deleted.append({"path": rel, "trash": dest.relative_to(trash).as_posix()})
+                if is_dir:
+                    db.remove_dir_files(payload.root, rel)
+                else:
+                    deleted_files.append(rel)
             except (ValueError, OSError) as exc:
                 errors[rel] = str(exc)
-        if deleted:
-            db.remove_files(payload.root, [d["path"] for d in deleted])
+        if deleted_files:
+            db.remove_files(payload.root, deleted_files)
         purge_trash(root_base, TRASH_TTL_SECONDS)
         return {"deleted": deleted, "errors": errors}
 
@@ -218,22 +228,29 @@ def create_app(mount_runner=None) -> FastAPI:
                 src = (trash / it.trash).resolve()
                 if trash not in src.parents:
                     raise ValueError(f"trash path escapes trash: {it.trash}")
-                if not src.is_file():
+                if not src.exists():
                     raise ValueError("no longer in trash")
                 dest = roots.resolve(payload.root, it.path)
                 if dest.exists():
                     raise ValueError("a file already exists there")
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(src), str(dest))
-                stat = dest.stat()
-                entries.append({
-                    "path": it.path,
-                    "name": it.path.split("/")[-1],
-                    "dir": it.path.rsplit("/", 1)[0] if "/" in it.path else "",
-                    "media_type": classify_media(dest) or "",
-                    "size": stat.st_size,
-                    "mtime": int(stat.st_mtime),
-                })
+                if dest.is_dir():
+                    for e in walk_media(dest):
+                        entries.append(e | {
+                            "path": f"{it.path}/{e['path']}",
+                            "dir": f"{it.path}/{e['dir']}" if e["dir"] else it.path,
+                        })
+                else:
+                    stat = dest.stat()
+                    entries.append({
+                        "path": it.path,
+                        "name": it.path.split("/")[-1],
+                        "dir": it.path.rsplit("/", 1)[0] if "/" in it.path else "",
+                        "media_type": classify_media(dest) or "",
+                        "size": stat.st_size,
+                        "mtime": int(stat.st_mtime),
+                    })
                 restored.append(it.path)
             except (ValueError, OSError) as exc:
                 errors[it.path] = str(exc)

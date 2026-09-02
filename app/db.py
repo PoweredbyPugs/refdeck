@@ -127,6 +127,11 @@ class RefDeckDB:
                     "media_type=excluded.media_type, size=excluded.size, mtime=excluded.mtime",
                     (root, e["path"], e["name"], e["dir"], e["media_type"], e["size"], e["mtime"]))
 
+    def remove_dir_files(self, root: str, dirpath: str) -> None:
+        with self.connect() as con:
+            con.execute("delete from files where root=? and (dir=? or dir like ?)",
+                        (root, dirpath, dirpath + "/%"))
+
     def remove_missing(self, root: str, seen: set[str]) -> int:
         with self.connect() as con:
             gone = [r["path"] for r in con.execute("select path from files where root=?", (root,))

@@ -155,6 +155,33 @@ def test_delete_undo_restores_files_and_index(tmp_path, monkeypatch):
     assert not any(p.is_file() for p in (media / ".refdeck-trash").rglob("*"))
 
 
+def test_delete_and_restore_directory(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    body = client.post("/api/files/delete", json={"root": "Media", "paths": ["sub"]}).json()
+    assert [d["path"] for d in body["deleted"]] == ["sub"]
+    assert body["errors"] == {}
+    assert not (media / "sub").exists()
+    assert client.get("/api/files", params={"root": "Media", "recursive": 1}).json()["total"] == 1
+    assert client.get("/api/browse", params={"root": "Media", "path": ""}).json()["dirs"] == []
+
+    resp = client.post("/api/files/restore", json={"root": "Media", "items": body["deleted"]}).json()
+    assert resp["restored"] == ["sub"] and resp["errors"] == {}
+    assert (media / "sub" / "nested.png").read_bytes() == b"fake"
+    files = client.get("/api/files", params={"root": "Media", "recursive": 1}).json()
+    assert files["total"] == 2
+    assert {f["dir"] for f in files["files"]} == {"", "sub"}
+
+
+def test_delete_refuses_root_and_hidden(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    (media / ".stuff").mkdir()
+    body = client.post("/api/files/delete",
+                       json={"root": "Media", "paths": ["", ".", ".stuff"]}).json()
+    assert body["deleted"] == []
+    assert len(body["errors"]) == 3
+    assert (media / ".stuff").is_dir()
+
+
 def test_restore_guards_traversal_and_missing(tmp_path, monkeypatch):
     client, media = make_client(tmp_path, monkeypatch)
     body = client.post("/api/files/restore", json={"root": "Media", "items": [

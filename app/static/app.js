@@ -91,6 +91,7 @@ async function init() {
     if (button.dataset.t === 'drill') selectFolder(root, path, true)
     if (button.dataset.t === 'flat') selectFolder(root, path, false)
     if (button.dataset.t === 'rescan') { api(`/api/scan/${encodeURIComponent(root)}`, { method: 'POST' }).then(pollScan) }
+    if (button.dataset.t === 'delete') deleteTreeFolder(root, path)
   }
   let searchTimer
   $('searchBox').oninput = event => {
@@ -514,12 +515,46 @@ function openTreeCtx(event, root, path) {
   const rows = [['open', 'Open'], ['drill', 'Drill down here', 'D']]
   if (state.drill) rows.push(['flat', 'Open flat (this folder only)'])
   if (path === '') rows.push(['rescan', 'Rescan drive'])
+  else rows.push(['delete', 'Delete folder'])
   const menu = $('tctx')
   menu.innerHTML = rows.map(([action, label, kbd]) =>
     `<button data-t="${action}">${label}${kbd ? `<kbd>${kbd}</kbd>` : ''}</button>`).join('')
   menu.hidden = false
   menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8) + 'px'
   menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8) + 'px'
+}
+
+async function deleteTreeFolder(root, path) {
+  const name = path.split('/').pop()
+  if (!confirm(`Delete folder “${name}” and everything in it?`)) return
+  let res
+  try {
+    res = await api('/api/files/delete', { method: 'POST', headers, body: JSON.stringify({ root, paths: [path] }) })
+  } catch (err) {
+    $('status').textContent = `delete failed: ${err.message}`
+    return
+  }
+  const firstError = Object.values(res.errors)[0]
+  if (!res.deleted.length) {
+    $('status').textContent = `delete failed: ${firstError || 'unknown error'}`
+    return
+  }
+  state.gridUndo.push([{ root, items: res.deleted }])
+  state.lastUndoScope = 'grid'
+  const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
+  for (const key of [...state.treeChildren.keys()]) {
+    const [r, p] = key.split('\x00')
+    if (r === root && (p === path || p.startsWith(path + '/'))) state.treeChildren.delete(key)
+  }
+  state.treeChildren.delete(treeKey(root, parent))
+  if (state.root === root && (state.path === path || state.path.startsWith(path + '/'))) {
+    await selectFolder(root, parent)  // the view was inside the deleted folder
+  } else {
+    await ensureChildren(root, parent)
+    renderTree()
+    if (state.root === root) await resetGrid()  // drill-down may have shown its files
+  }
+  $('status').textContent = `deleted folder ${name} — ⌘Z to undo`
 }
 
 async function browse() {
@@ -773,15 +808,23 @@ async function undoGridDelete() {
   if (!state.gridUndo.length) state.lastUndoScope = 'board'
   let restored = 0
   const errors = []
+  const parents = new Set()
   for (const b of batches) {
     try {
       const res = await api('/api/files/restore', { method: 'POST', headers, body: JSON.stringify({ root: b.root, items: b.items }) })
       restored += res.restored.length
       errors.push(...Object.values(res.errors))
+      res.restored.forEach(p => parents.add(treeKey(b.root, p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '')))
     } catch (err) {
       errors.push(err.message)
     }
   }
+  for (const key of parents) {  // restored folders must reappear in the tree
+    const [r, p] = key.split('\x00')
+    state.treeChildren.delete(key)
+    await ensureChildren(r, p)
+  }
+  renderTree()
   await resetGrid()
   $('status').textContent = errors.length
     ? `restored ${restored} — ${errors.length} failed: ${errors[0]}`
