@@ -28,6 +28,7 @@ const state = {
   contextIndex: null,
   pv: { scale: 1, x: 0, y: 0, rot: 0, flipX: false, flipY: false },
   pvDepth: { on: false, split: 0.5 },
+  pvLoop: false,
   pv360: null,
   pv360Loading: false,
   masonryNext: 0,
@@ -295,6 +296,12 @@ async function init() {
     if (event.key === '1') { event.preventDefault(); pvOriginalSize() }
     if (event.key.toLowerCase() === 'm' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); toggleDepthCompare() }
     if (event.key === '/') { event.preventDefault(); $('preview').close(); openPalette() }
+    const vid = pvMedia()?.tagName === 'VIDEO' ? pvMedia() : null
+    if (vid && !event.metaKey && !event.ctrlKey) {
+      if (event.key.toLowerCase() === 'l') { event.preventDefault(); pvToggleLoop() }
+      if (event.key.toLowerCase() === 'n') { event.preventDefault(); vid.currentTime = Math.min(vid.duration || vid.currentTime + 5, vid.currentTime + 5) }
+      if (event.key.toLowerCase() === 't') { event.preventDefault(); vid.currentTime = Math.max(0, vid.currentTime - 5) }
+    }
   })
   $('preview').addEventListener('cancel', event => {
     // first Esc leaves the 360 viewer, second closes the preview
@@ -334,6 +341,7 @@ async function init() {
     if (action === 'flipv') pvFlip('y')
     if (action === 'onesize') pvOriginalSize()
     if (action === 'pano') pv360Toggle()
+    if (action === 'loop') pvToggleLoop()
     if (action === 'depth') toggleDepthCompare()
     if (action === 'depthcopy') copyDepthToClipboard()
     if (action === 'depthsave') downloadDepth()
@@ -903,15 +911,38 @@ function renderPreview(item) {
   $('pvPanoBtn').hidden = true
   pvResetZoom()
   $('previewBody').innerHTML = normalized.media_type === 'video'
-    ? `<video src="${mediaUrl(normalized)}" controls autoplay></video>`
+    ? `<video src="${mediaUrl(normalized)}" controls autoplay${state.pvLoop ? ' loop' : ''}></video>`
     : `<img src="${previewUrl(normalized)}" draggable="false" />`
   renderPvDetails()
+  $('pvLoopBtn').hidden = normalized.media_type !== 'video'
   const media = pvMedia()
   if (media) {
     const update = () => { renderPvDetails(); pvApply(); $('pvPanoBtn').hidden = !pvIs360() }
-    media.tagName === 'VIDEO' ? media.addEventListener('loadedmetadata', update) : media.addEventListener('load', update)
+    if (media.tagName === 'VIDEO') {
+      media.addEventListener('loadedmetadata', update)
+      media.addEventListener('ended', () => { if (!media.loop) pvAutoAdvance() })
+    } else {
+      media.addEventListener('load', update)
+    }
   }
   if (!$('preview').open) $('preview').showModal()
+}
+
+function pvToggleLoop() {
+  state.pvLoop = !state.pvLoop
+  const media = pvMedia()
+  if (media?.tagName === 'VIDEO') media.loop = state.pvLoop
+  $('status').textContent = state.pvLoop ? 'loop: on' : 'loop: off'
+}
+
+// collection videos play through in collection order once one ends
+function pvAutoAdvance() {
+  if (!state.collectionId || state.previewIndex === null) return
+  for (let i = state.previewIndex + 1; i < state.gridFiles.length; i++) {
+    const f = state.gridFiles[i]
+    if (f && normalizeExplorerItem(f).media_type === 'video') { openPreviewAt(i); return }
+  }
+  $('status').textContent = 'end of collection'
 }
 
 // --- 360 panoramas — equirectangular photos are exactly 2:1 ---

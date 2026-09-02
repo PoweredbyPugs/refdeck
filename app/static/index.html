@@ -7,7 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="stylesheet" href="/style.css?v=30" />
+  <link rel="stylesheet" href="/style.css?v=31" />
   <link rel="stylesheet" href="/vendor/psv-core.css" />
   <script type="importmap">{ "imports": { "three": "/vendor/three.module.js" } }</script>
 </head>
@@ -173,6 +173,8 @@
       <div class="hkRow"><kbd>M</kbd><span>depth map compare — drag the bar to scrub</span></div>
       <div class="hkRow"><kbd>3</kbd><span>360 panorama view — 2:1 equirectangular photos only</span></div>
       <div class="hkRow"><kbd>I</kbd><span>details panel</span></div>
+      <div class="hkRow"><kbd>L</kbd><span>video: toggle loop</span></div>
+      <div class="hkRow"><kbd>N T</kbd><span>video: skip forward / back 5 s</span></div>
       <div class="hkRow"><kbd>Esc</kbd><span>close (stops video)</span></div>
       <div class="hkRow"><kbd>R-click</kbd><span>full action menu — everywhere in the app</span></div>
     </div>
@@ -193,6 +195,7 @@
       <button data-pv="fliph">Flip horizontal <kbd>H</kbd></button>
       <button data-pv="flipv">Flip vertical <kbd>V</kbd></button>
       <button data-pv="pano" id="pvPanoBtn" hidden>360 view <kbd>3</kbd></button>
+      <button data-pv="loop" id="pvLoopBtn" hidden>Toggle loop <kbd>L</kbd></button>
       <button data-pv="depth">Depth map compare <kbd>M</kbd></button>
       <button data-pv="depthcopy">Copy depth map</button>
       <button data-pv="depthsave">Download depth map</button>
@@ -202,6 +205,6 @@
       <button data-pv="close">Close <kbd>Esc</kbd></button>
     </div>
   </dialog>
-  <script src="/app.js?v=30"></script>
+  <script src="/app.js?v=31"></script>
 </body>
 </html>
