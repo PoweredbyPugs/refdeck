@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -36,6 +37,40 @@ class BoardIn(BaseModel):
 class DeleteIn(BaseModel):
     root: str
     paths: list[str]
+
+
+class RestoreItem(BaseModel):
+    path: str
+    trash: str
+
+
+class RestoreIn(BaseModel):
+    root: str
+    items: list[RestoreItem]
+
+
+TRASH_DIR = ".refdeck-trash"
+TRASH_TTL_SECONDS = 3600
+
+
+def purge_trash(base: Path, ttl: float = 0) -> None:
+    """Drop trash batches older than ttl seconds (ttl<=0: everything).
+
+    Deletes are permanent from the user's point of view; the trash only
+    exists to back the undo window."""
+    trash = base / TRASH_DIR
+    if not trash.is_dir():
+        return
+    if ttl <= 0:
+        shutil.rmtree(trash, ignore_errors=True)
+        return
+    cutoff_ms = (time.time() - ttl) * 1000
+    for batch in trash.iterdir():
+        try:
+            if batch.is_dir() and float(batch.name) < cutoff_ms:
+                shutil.rmtree(batch, ignore_errors=True)
+        except ValueError:
+            continue
 
 
 class MountIn(BaseModel):
@@ -85,6 +120,9 @@ def create_app(mount_runner=None) -> FastAPI:
     @app.on_event("startup")
     def startup():
         mounts.restore_all()
+        for base in roots.roots.values():
+            if Path(base).is_dir():
+                purge_trash(Path(base))  # undo doesn't survive a restart; deletes are final
         scanner.start_all()
 
     @app.get("/api/roots")
@@ -139,28 +177,74 @@ def create_app(mount_runner=None) -> FastAPI:
     def api_delete_files(payload: DeleteIn):
         if payload.root not in roots.roots:
             raise HTTPException(status_code=400, detail=f"unknown root: {payload.root}")
-        # soft delete: rename into <root>/.refdeck-trash (indexer skips dot-folders)
-        trash = Path(roots.roots[payload.root]) / ".refdeck-trash"
-        deleted: list[str] = []
+        # files land in a timestamped trash batch (invisible to the indexer)
+        # purely to back ⌘Z; batches are purged after TRASH_TTL_SECONDS
+        root_base = Path(roots.roots[payload.root])
+        trash = root_base / TRASH_DIR
+        batch_dir = trash / str(int(time.time() * 1000))
+        deleted: list[dict] = []
         errors: dict[str, str] = {}
         for rel in payload.paths:
             try:
                 target = roots.resolve(payload.root, rel)
                 if not target.is_file():
                     raise ValueError("file not found")
-                dest = trash / rel
+                dest = batch_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 base, n = dest, 1
                 while dest.exists():
                     dest = base.with_name(f"{base.stem}-{n}{base.suffix}")
                     n += 1
                 shutil.move(str(target), str(dest))
-                deleted.append(rel)
+                deleted.append({"path": rel, "trash": dest.relative_to(trash).as_posix()})
             except (ValueError, OSError) as exc:
                 errors[rel] = str(exc)
         if deleted:
-            db.remove_files(payload.root, deleted)
+            db.remove_files(payload.root, [d["path"] for d in deleted])
+        purge_trash(root_base, TRASH_TTL_SECONDS)
         return {"deleted": deleted, "errors": errors}
+
+    @app.post("/api/files/restore")
+    def api_restore_files(payload: RestoreIn):
+        if payload.root not in roots.roots:
+            raise HTTPException(status_code=400, detail=f"unknown root: {payload.root}")
+        root_base = Path(roots.roots[payload.root])
+        trash = (root_base / TRASH_DIR).resolve()
+        restored: list[str] = []
+        errors: dict[str, str] = {}
+        entries: list[dict] = []
+        for it in payload.items:
+            try:
+                src = (trash / it.trash).resolve()
+                if trash not in src.parents:
+                    raise ValueError(f"trash path escapes trash: {it.trash}")
+                if not src.is_file():
+                    raise ValueError("no longer in trash")
+                dest = roots.resolve(payload.root, it.path)
+                if dest.exists():
+                    raise ValueError("a file already exists there")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dest))
+                stat = dest.stat()
+                entries.append({
+                    "path": it.path,
+                    "name": it.path.split("/")[-1],
+                    "dir": it.path.rsplit("/", 1)[0] if "/" in it.path else "",
+                    "media_type": classify_media(dest) or "",
+                    "size": stat.st_size,
+                    "mtime": int(stat.st_mtime),
+                })
+                restored.append(it.path)
+            except (ValueError, OSError) as exc:
+                errors[it.path] = str(exc)
+        media_entries = [e for e in entries if e["media_type"]]
+        if media_entries:
+            db.upsert_files(payload.root, media_entries)
+        if trash.is_dir():  # drop batch dirs that are now empty shells
+            for b in list(trash.iterdir()):
+                if b.is_dir() and not any(p.is_file() for p in b.rglob("*")):
+                    shutil.rmtree(b, ignore_errors=True)
+        return {"restored": restored, "errors": errors}
 
     @app.get("/api/thumb")
     def api_thumb(root: str, path: str):

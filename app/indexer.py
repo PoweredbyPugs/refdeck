@@ -22,8 +22,10 @@ def free_bytes(path: Path) -> int:
 IGNORE_MARKER = ".refdeck-ignore"
 
 
-def walk_media(base: Path) -> list[dict]:
-    entries = []
+BATCH_SIZE = 250
+
+
+def walk_media(base: Path):
     stack = [base]
     while stack:
         folder = stack.pop()
@@ -50,15 +52,14 @@ def walk_media(base: Path) -> list[dict]:
                 continue
             rel = child.relative_to(base)
             parent = rel.parent.as_posix()
-            entries.append({
+            yield {
                 "path": rel.as_posix(),
                 "name": child.name,
                 "dir": "" if parent == "." else parent,
                 "media_type": media_type,
                 "size": stat.st_size,
                 "mtime": int(stat.st_mtime),
-            })
-    return entries
+            }
 
 
 class ScanManager:
@@ -99,10 +100,35 @@ class ScanManager:
             base = self.roots.roots.get(root)
             if base is None or not base.is_dir():
                 return
-            entries = walk_media(base)
-            stats = self.db.sync_files(root, entries)
+            # commit as we walk so a restart or network drop keeps progress;
+            # prune vanished files only after a COMPLETE walk (a partial one
+            # simply hasn't seen the rest yet)
+            entries: list[dict] = []
+            batch: list[dict] = []
+
+            def flush():
+                if not batch:
+                    return
+                self.db.upsert_files(root, batch)
+                entries.extend(batch)
+                batch.clear()
+                with self._lock:
+                    self._status[root]["files"] = len(entries)
+
+            try:
+                for entry in walk_media(base):
+                    batch.append(entry)
+                    if len(batch) >= BATCH_SIZE:
+                        flush()
+            except OSError as exc:
+                flush()
+                with self._lock:
+                    self._status[root]["error"] = str(exc)
+                return
+            flush()
+            removed = self.db.remove_missing(root, {e["path"] for e in entries})
             with self._lock:
-                self._status[root].update(state="thumbnails", files=len(entries), **stats)
+                self._status[root].update(state="thumbnails", files=len(entries), removed=removed)
             if self.thumb_fn:
                 for i, e in enumerate(sorted(entries, key=lambda x: -x["mtime"])):
                     if i % 50 == 0 and free_bytes(Path.cwd()) < MIN_FREE_BYTES:

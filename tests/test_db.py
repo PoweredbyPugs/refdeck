@@ -51,20 +51,22 @@ def _entry(path, size=10, mtime=100, media_type="image"):
             "media_type": media_type, "size": size, "mtime": mtime}
 
 
-def test_sync_files_add_update_remove(tmp_path):
+def test_upsert_and_remove_missing(tmp_path):
     db = RefDeckDB(tmp_path / "t.db")
     db.init([])
-    stats = db.sync_files("R", [_entry("a.jpg"), _entry("sub/b.jpg")])
-    assert stats == {"added": 2, "updated": 0, "removed": 0}
-    stats = db.sync_files("R", [_entry("a.jpg", size=99), _entry("sub/c.jpg")])
-    assert stats == {"added": 1, "updated": 1, "removed": 1}
+    db.upsert_files("R", [_entry("a.jpg"), _entry("sub/b.jpg")])
     assert db.media_count("R") == 2
+    db.upsert_files("R", [_entry("a.jpg", size=99), _entry("sub/c.jpg")])
+    assert db.media_count("R") == 3  # upsert alone never removes
+    assert db.query_files("R", query="a.jpg")["files"][0]["size"] == 99
+    removed = db.remove_missing("R", {"a.jpg", "sub/c.jpg"})
+    assert removed == 1 and db.media_count("R") == 2
 
 
 def test_query_files_recursive_search_sort(tmp_path):
     db = RefDeckDB(tmp_path / "t.db")
     db.init([])
-    db.sync_files("R", [_entry("z.jpg", mtime=1), _entry("sub/a.jpg", mtime=9),
+    db.upsert_files("R", [_entry("z.jpg", mtime=1), _entry("sub/a.jpg", mtime=9),
                         _entry("sub/deep/b.png", mtime=5)])
     flat = db.query_files("R", dir="")
     assert [f["name"] for f in flat["files"]] == ["z.jpg"] and flat["total"] == 1
@@ -82,7 +84,7 @@ def test_query_files_recursive_search_sort(tmp_path):
 def test_query_files_type_and_ext_filters(tmp_path):
     db = RefDeckDB(tmp_path / "t.db")
     db.init([])
-    db.sync_files("R", [_entry("a.jpg"), _entry("b.PNG"), _entry("c.mov", media_type="video"),
+    db.upsert_files("R", [_entry("a.jpg"), _entry("b.PNG"), _entry("c.mov", media_type="video"),
                         _entry("sub/d.jpeg")])
     videos = db.query_files("R", recursive=True, media_type="video")
     assert [f["name"] for f in videos["files"]] == ["c.mov"]

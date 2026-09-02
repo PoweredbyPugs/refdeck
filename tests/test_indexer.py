@@ -49,6 +49,42 @@ def test_scan_skips_thumbnails_when_disk_low(tmp_path, monkeypatch):
     assert scanner.status()["R"]["thumbs_paused"] == "low disk space"
 
 
+def test_interrupted_walk_keeps_committed_batches_and_skips_prune(tmp_path, monkeypatch):
+    # A container restart (or CIFS drop) mid-walk must not lose progress or
+    # prune rows it never got to see — pruning is only safe after a FULL walk.
+    import app.indexer as indexer
+    monkeypatch.setattr(indexer, "free_bytes", lambda p: 10 * 1024 ** 3)
+    monkeypatch.setattr(indexer, "BATCH_SIZE", 1)
+    base = tmp_path / "media"
+    base.mkdir()
+    make_tree(base)
+    db = RefDeckDB(tmp_path / "t.db")
+    db.init([])
+    # a file indexed on a previous run that is gone from disk now
+    db.upsert_files("R", [{"path": "stale.jpg", "name": "stale.jpg", "dir": "",
+                           "media_type": "image", "size": 1, "mtime": 1}])
+
+    real_walk = indexer.walk_media
+
+    def dying_walk(b):
+        for i, entry in enumerate(real_walk(b)):
+            if i == 1:
+                raise OSError("network dropped")
+            yield entry
+
+    monkeypatch.setattr(indexer, "walk_media", dying_walk)
+    scanner = ScanManager(MediaRoots({"R": base}), db)
+    scanner.start("R")
+    scanner.wait("R")
+    assert db.media_count("R") == 2  # 1 walked file committed + stale row kept
+    assert scanner.status()["R"]["state"] == "idle"
+
+    monkeypatch.setattr(indexer, "walk_media", real_walk)
+    scanner.start("R")
+    scanner.wait("R")
+    assert db.media_count("R") == 3  # full walk indexes everything, prunes stale
+
+
 def test_scan_manager_indexes_and_reports(tmp_path, monkeypatch):
     import app.indexer as indexer
     monkeypatch.setattr(indexer, "free_bytes", lambda p: 10 * 1024 ** 3)

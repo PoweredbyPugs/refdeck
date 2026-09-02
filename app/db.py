@@ -118,32 +118,24 @@ class RefDeckDB:
         with self.connect() as con:
             con.execute("delete from boards where id=?", (board_id,))
 
-    def sync_files(self, root: str, entries: list[dict]) -> dict:
+    def upsert_files(self, root: str, entries: list[dict]) -> None:
         with self.connect() as con:
-            existing = {r["path"]: (r["size"], r["mtime"])
-                        for r in con.execute("select path, size, mtime from files where root=?", (root,))}
-            added = updated = 0
-            seen = set()
             for e in entries:
-                seen.add(e["path"])
-                prev = existing.get(e["path"])
-                if prev is None:
-                    added += 1
-                elif prev != (e["size"], e["mtime"]):
-                    updated += 1
-                else:
-                    continue
                 con.execute(
                     "insert into files(root, path, name, dir, media_type, size, mtime) values(?,?,?,?,?,?,?) "
                     "on conflict(root, path) do update set name=excluded.name, dir=excluded.dir, "
                     "media_type=excluded.media_type, size=excluded.size, mtime=excluded.mtime",
                     (root, e["path"], e["name"], e["dir"], e["media_type"], e["size"], e["mtime"]))
-            removed = [p for p in existing if p not in seen]
-            for i in range(0, len(removed), 500):
-                chunk = removed[i:i + 500]
+
+    def remove_missing(self, root: str, seen: set[str]) -> int:
+        with self.connect() as con:
+            gone = [r["path"] for r in con.execute("select path from files where root=?", (root,))
+                    if r["path"] not in seen]
+            for i in range(0, len(gone), 500):
+                chunk = gone[i:i + 500]
                 marks = ",".join("?" for _ in chunk)
                 con.execute(f"delete from files where root=? and path in ({marks})", [root, *chunk])
-            return {"added": added, "updated": updated, "removed": len(removed)}
+            return len(gone)
 
     def query_files(self, root: str, dir: str = "", recursive: bool = False, query: str = "",
                     sort: str = "name", limit: int = 200, offset: int = 0,

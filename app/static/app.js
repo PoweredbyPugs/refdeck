@@ -11,6 +11,8 @@ const state = {
   sel: new Set(),
   selAnchor: null,
   selSticky: false,
+  gridUndo: [],
+  lastUndoScope: 'board',
   typeFilter: '',
   extActive: new Set(),
   treeExpanded: new Set(),
@@ -403,7 +405,12 @@ function handleKeys(event) {
   if (event.key === ']') { moveSelectedLayer(1) }
   if (event.key === '[') { moveSelectedLayer(-1) }
   if ((event.metaKey || event.ctrlKey) && key === 's') { event.preventDefault(); saveBoard() }
-  if ((event.metaKey || event.ctrlKey) && key === 'z') { event.preventDefault(); event.shiftKey ? redoBoard() : undoBoard() }
+  if ((event.metaKey || event.ctrlKey) && key === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) redoBoard()
+    else if (state.lastUndoScope === 'grid' && state.gridUndo.length) undoGridDelete()
+    else undoBoard()
+  }
 }
 
 function setMode(mode) {
@@ -709,7 +716,7 @@ async function deleteGridSelection() {
     $('status').textContent = `removed ${items.length} from collection`
     return
   }
-  if (!confirm(`Move ${items.length} file${items.length === 1 ? '' : 's'} to .refdeck-trash?`)) return
+  if (!confirm(`Delete ${items.length} file${items.length === 1 ? '' : 's'}?`)) return
   const byRoot = new Map()
   items.forEach(it => {
     const n = normalizeExplorerItem(it)
@@ -718,20 +725,47 @@ async function deleteGridSelection() {
   })
   let deleted = 0
   const errors = []
+  const undoBatches = []
   try {
     for (const [root, paths] of byRoot) {
       const res = await api('/api/files/delete', { method: 'POST', headers, body: JSON.stringify({ root, paths }) })
       deleted += res.deleted.length
+      if (res.deleted.length) undoBatches.push({ root, items: res.deleted })
       errors.push(...Object.values(res.errors))
     }
   } catch (err) {
     errors.push(err.message)
   }
+  if (undoBatches.length) {
+    state.gridUndo.push(undoBatches)
+    state.lastUndoScope = 'grid'
+  }
   clearGridSel()
   await resetGrid()
   $('status').textContent = errors.length
     ? `deleted ${deleted} — ${errors.length} failed: ${errors[0]}`
-    : `deleted ${deleted} — recoverable from .refdeck-trash`
+    : `deleted ${deleted} — ⌘Z to undo`
+}
+
+async function undoGridDelete() {
+  const batches = state.gridUndo.pop()
+  if (!batches) return
+  if (!state.gridUndo.length) state.lastUndoScope = 'board'
+  let restored = 0
+  const errors = []
+  for (const b of batches) {
+    try {
+      const res = await api('/api/files/restore', { method: 'POST', headers, body: JSON.stringify({ root: b.root, items: b.items }) })
+      restored += res.restored.length
+      errors.push(...Object.values(res.errors))
+    } catch (err) {
+      errors.push(err.message)
+    }
+  }
+  await resetGrid()
+  $('status').textContent = errors.length
+    ? `restored ${restored} — ${errors.length} failed: ${errors[0]}`
+    : `restored ${restored}`
 }
 
 function appendCards(files) {
@@ -1213,7 +1247,7 @@ async function pollScan() {
   const active = Object.entries(status).filter(([, s]) => s.state !== 'idle')
   if (active.length) {
     $('status').textContent = active
-      .map(([name, s]) => s.state === 'scanning' ? `scanning ${name}…` : `caching thumbnails for ${name} (${s.files} files)…`)
+      .map(([name, s]) => s.state === 'scanning' ? `scanning ${name}… ${s.files} files` : `caching thumbnails for ${name} (${s.files} files)…`)
       .join(' · ')
     clearTimeout(scanTimer)
     scanTimer = setTimeout(pollScan, 3000)
@@ -1493,6 +1527,7 @@ function recordBoard() {
   state.boardHistory.push(boardSnapshot())
   if (state.boardHistory.length > 100) state.boardHistory.shift()
   state.boardFuture = []
+  state.lastUndoScope = 'board'
   scheduleAutosave()
 }
 

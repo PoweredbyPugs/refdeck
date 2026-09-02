@@ -123,21 +123,68 @@ def test_delete_moves_files_to_trash_and_deindexes(tmp_path, monkeypatch):
                        json={"root": "Media", "paths": ["top.jpg", "sub/nested.png"]})
     assert resp.status_code == 200
     body = resp.json()
-    assert sorted(body["deleted"]) == ["sub/nested.png", "top.jpg"]
+    assert sorted(d["path"] for d in body["deleted"]) == ["sub/nested.png", "top.jpg"]
     assert body["errors"] == {}
     assert not (media / "top.jpg").exists()
-    assert (media / ".refdeck-trash" / "top.jpg").read_bytes() == b"fake"
-    assert (media / ".refdeck-trash" / "sub" / "nested.png").exists()
+    for d in body["deleted"]:
+        assert (media / ".refdeck-trash" / d["trash"]).is_file()
     assert client.get("/api/files", params={"root": "Media", "recursive": 1}).json()["total"] == 0
 
     # same name deleted again must not clobber what's already in the trash
     (media / "top.jpg").write_bytes(b"take2")
     client.post("/api/scan/Media")
     client.app.state.scanner.wait("Media")
-    assert client.post("/api/files/delete",
-                       json={"root": "Media", "paths": ["top.jpg"]}).json()["deleted"] == ["top.jpg"]
-    trashed = sorted(p.name for p in (media / ".refdeck-trash").iterdir() if p.is_file())
-    assert len(trashed) == 2 and "top.jpg" in trashed
+    again = client.post("/api/files/delete", json={"root": "Media", "paths": ["top.jpg"]}).json()
+    trashed = [p for p in (media / ".refdeck-trash").rglob("*") if p.is_file()]
+    assert len(trashed) == 3
+    assert (media / ".refdeck-trash" / again["deleted"][0]["trash"]).read_bytes() == b"take2"
+
+
+def test_delete_undo_restores_files_and_index(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    deleted = client.post("/api/files/delete",
+                          json={"root": "Media", "paths": ["top.jpg", "sub/nested.png"]}).json()["deleted"]
+    resp = client.post("/api/files/restore", json={"root": "Media", "items": deleted})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert sorted(body["restored"]) == ["sub/nested.png", "top.jpg"]
+    assert body["errors"] == {}
+    assert (media / "top.jpg").read_bytes() == b"fake"
+    assert (media / "sub" / "nested.png").is_file()
+    assert client.get("/api/files", params={"root": "Media", "recursive": 1}).json()["total"] == 2
+    assert not any(p.is_file() for p in (media / ".refdeck-trash").rglob("*"))
+
+
+def test_restore_guards_traversal_and_missing(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    body = client.post("/api/files/restore", json={"root": "Media", "items": [
+        {"path": "x.jpg", "trash": "../../evil.jpg"},
+        {"path": "y.jpg", "trash": "12345/y.jpg"},
+    ]}).json()
+    assert body["restored"] == []
+    assert set(body["errors"]) == {"x.jpg", "y.jpg"}
+
+
+def test_stale_trash_batches_purged_on_delete(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    old = media / ".refdeck-trash" / "1000"  # epoch-ms batch from long ago
+    old.mkdir(parents=True)
+    (old / "old.jpg").write_bytes(b"x")
+    fresh = client.post("/api/files/delete", json={"root": "Media", "paths": ["top.jpg"]}).json()
+    assert not old.exists()
+    assert (media / ".refdeck-trash" / fresh["deleted"][0]["trash"]).is_file()
+
+
+def test_trash_emptied_on_startup(tmp_path, monkeypatch):
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / ".refdeck-trash" / "999").mkdir(parents=True)
+    (media / ".refdeck-trash" / "999" / "gone.jpg").write_bytes(b"x")
+    monkeypatch.setenv("REFDECK_ROOTS", f"Media={media}")
+    monkeypatch.setenv("REFDECK_DATA_DIR", str(tmp_path / "data"))
+    with TestClient(create_app()):  # context manager runs startup events
+        pass
+    assert not (media / ".refdeck-trash").exists()
 
 
 def test_delete_guards_bad_root_traversal_and_missing(tmp_path, monkeypatch):
@@ -146,7 +193,7 @@ def test_delete_guards_bad_root_traversal_and_missing(tmp_path, monkeypatch):
                        json={"root": "Nope", "paths": ["x.jpg"]}).status_code == 400
     body = client.post("/api/files/delete",
                        json={"root": "Media", "paths": ["../evil.jpg", "ghost.jpg", "top.jpg"]}).json()
-    assert body["deleted"] == ["top.jpg"]
+    assert [d["path"] for d in body["deleted"]] == ["top.jpg"]
     assert set(body["errors"]) == {"../evil.jpg", "ghost.jpg"}
     assert (media / "sub" / "nested.png").exists()  # untouched
 
