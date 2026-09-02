@@ -267,3 +267,9 @@ body.zen #browser { padding-top: 14px; }
 @media (prefers-reduced-motion: reduce) {
   header, #browserToolbar, #folders { transition: none !important; }
 }
+
+/* explorer multi-select */
+.mItem.sel img, .card.sel { outline: 2px solid var(--acc); outline-offset: -2px; }
+.mItem.sel img { opacity: .8; }
+.card.sel { border-color: var(--acc); }
+.lrow.sel { background: rgba(226, 161, 78, .14); outline: 1px solid var(--acc); outline-offset: -1px; }

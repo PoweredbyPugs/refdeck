@@ -183,6 +183,13 @@ class RefDeckDB:
                                    (root, dir, dir + "/%")).fetchone()[0]
             return con.execute("select count(*) from files where root=?", (root,)).fetchone()[0]
 
+    def remove_files(self, root: str, paths: list[str]) -> None:
+        with self.connect() as con:
+            for i in range(0, len(paths), 500):
+                chunk = paths[i:i + 500]
+                marks = ",".join("?" for _ in chunk)
+                con.execute(f"delete from files where root=? and path in ({marks})", [root, *chunk])
+
     def delete_root_files(self, root: str) -> None:
         with self.connect() as con:
             con.execute("delete from files where root=?", (root,))

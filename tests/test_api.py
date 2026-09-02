@@ -117,6 +117,40 @@ def test_depth_endpoint_guards(tmp_path, monkeypatch):
     assert resp.status_code == 400 and "images only" in resp.json()["detail"]
 
 
+def test_delete_moves_files_to_trash_and_deindexes(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    resp = client.post("/api/files/delete",
+                       json={"root": "Media", "paths": ["top.jpg", "sub/nested.png"]})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert sorted(body["deleted"]) == ["sub/nested.png", "top.jpg"]
+    assert body["errors"] == {}
+    assert not (media / "top.jpg").exists()
+    assert (media / ".refdeck-trash" / "top.jpg").read_bytes() == b"fake"
+    assert (media / ".refdeck-trash" / "sub" / "nested.png").exists()
+    assert client.get("/api/files", params={"root": "Media", "recursive": 1}).json()["total"] == 0
+
+    # same name deleted again must not clobber what's already in the trash
+    (media / "top.jpg").write_bytes(b"take2")
+    client.post("/api/scan/Media")
+    client.app.state.scanner.wait("Media")
+    assert client.post("/api/files/delete",
+                       json={"root": "Media", "paths": ["top.jpg"]}).json()["deleted"] == ["top.jpg"]
+    trashed = sorted(p.name for p in (media / ".refdeck-trash").iterdir() if p.is_file())
+    assert len(trashed) == 2 and "top.jpg" in trashed
+
+
+def test_delete_guards_bad_root_traversal_and_missing(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    assert client.post("/api/files/delete",
+                       json={"root": "Nope", "paths": ["x.jpg"]}).status_code == 400
+    body = client.post("/api/files/delete",
+                       json={"root": "Media", "paths": ["../evil.jpg", "ghost.jpg", "top.jpg"]}).json()
+    assert body["deleted"] == ["top.jpg"]
+    assert set(body["errors"]) == {"../evil.jpg", "ghost.jpg"}
+    assert (media / "sub" / "nested.png").exists()  # untouched
+
+
 def test_insp_indexed_and_served_as_full_res_jpeg(tmp_path, monkeypatch):
     # Insta360 .insp panoramas are JPEG bytes under another name; they must be
     # indexed as images and served untouched (full res, explicit image/jpeg)

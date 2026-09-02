@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -30,6 +31,11 @@ class BoardIn(BaseModel):
     id: int | None = None
     title: str
     document: dict
+
+
+class DeleteIn(BaseModel):
+    root: str
+    paths: list[str]
 
 
 class MountIn(BaseModel):
@@ -128,6 +134,33 @@ def create_app(mount_runner=None) -> FastAPI:
     def api_media(root: str, path: str):
         target = resolve_file(root, path)
         return FileResponse(target, media_type=MIME_OVERRIDES.get(target.suffix.lower()))
+
+    @app.post("/api/files/delete")
+    def api_delete_files(payload: DeleteIn):
+        if payload.root not in roots.roots:
+            raise HTTPException(status_code=400, detail=f"unknown root: {payload.root}")
+        # soft delete: rename into <root>/.refdeck-trash (indexer skips dot-folders)
+        trash = Path(roots.roots[payload.root]) / ".refdeck-trash"
+        deleted: list[str] = []
+        errors: dict[str, str] = {}
+        for rel in payload.paths:
+            try:
+                target = roots.resolve(payload.root, rel)
+                if not target.is_file():
+                    raise ValueError("file not found")
+                dest = trash / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                base, n = dest, 1
+                while dest.exists():
+                    dest = base.with_name(f"{base.stem}-{n}{base.suffix}")
+                    n += 1
+                shutil.move(str(target), str(dest))
+                deleted.append(rel)
+            except (ValueError, OSError) as exc:
+                errors[rel] = str(exc)
+        if deleted:
+            db.remove_files(payload.root, deleted)
+        return {"deleted": deleted, "errors": errors}
 
     @app.get("/api/thumb")
     def api_thumb(root: str, path: str):

@@ -8,6 +8,9 @@ const state = {
   gridOffset: 0,
   gridLoading: false,
   drill: localStorage.getItem('refdeck.drill') === '1',
+  sel: new Set(),
+  selAnchor: null,
+  selSticky: false,
   typeFilter: '',
   extActive: new Set(),
   treeExpanded: new Set(),
@@ -186,6 +189,8 @@ async function init() {
     if (!itemEl) return
     const idx = +itemEl.dataset.idx
     const item = state.gridFiles[idx]
+    if (event.shiftKey) { event.preventDefault(); gridSelRange(idx); return }
+    if (event.ctrlKey || event.metaKey) { event.preventDefault(); gridSelToggle(idx); return }
     const button = event.target.closest('button[data-action]')
     if (button) {
       if (button.dataset.action === 'preview') openPreviewAt(idx)
@@ -193,6 +198,7 @@ async function init() {
       if (button.dataset.action === 'collect') openCollectionPicker(event, item)
       return
     }
+    if (state.selSticky) { gridSelToggle(idx); return }
     if (state.view !== 'cards') openPreviewAt(idx)
   }
   $('grid').addEventListener('contextmenu', event => {
@@ -207,11 +213,20 @@ async function init() {
     $('ctxMenu').hidden = true
     if (!button || !state.contextItem) return
     const item = state.contextItem
+    // right-clicking a selected item applies board/collect/delete to the whole selection
+    const multi = state.sel.has(state.contextIndex)
+    const targets = multi
+      ? [...state.sel].sort((a, b) => a - b).map(i => state.gridFiles[i]).filter(Boolean)
+      : [item]
     if (button.dataset.ctx === 'preview') openPreviewAt(state.contextIndex)
-    if (button.dataset.ctx === 'board') addToBoard(item)
-    if (button.dataset.ctx === 'collect') openCollectionPicker(event, item)
+    if (button.dataset.ctx === 'board') targets.forEach(t => addToBoard(t))
+    if (button.dataset.ctx === 'collect') openCollectionPicker(event, multi ? targets : item)
     if (button.dataset.ctx === 'uncollect') removeFromCollection(item)
     if (button.dataset.ctx === 'depth') generateDepthFor(item)
+    if (button.dataset.ctx === 'delete') {
+      if (!multi) { clearGridSel(); gridSelToggle(state.contextIndex) }
+      deleteGridSelection()
+    }
     if (button.dataset.ctx === 'original') window.open(mediaUrl(normalizeExplorerItem(item)), '_blank')
   }
   document.addEventListener('click', event => {
@@ -232,14 +247,16 @@ async function init() {
       const created = await api('/api/collections', { method: 'POST', headers, body: JSON.stringify({ title }) })
       cid = created.id
     }
-    const n = normalizeExplorerItem(state.pickItem)
-    await api(`/api/collections/${cid}/items`, {
-      method: 'POST', headers,
-      body: JSON.stringify({ path: `${n.root}/${n.path}`, media_type: n.media_type })
-    })
+    const picks = (Array.isArray(state.pickItem) ? state.pickItem : [state.pickItem]).map(normalizeExplorerItem)
+    for (const n of picks) {
+      await api(`/api/collections/${cid}/items`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ path: `${n.root}/${n.path}`, media_type: n.media_type })
+      })
+    }
     await loadCollections()
     if (state.collectionId) renderCollectionGrid()
-    $('status').textContent = 'saved to collection'
+    $('status').textContent = picks.length > 1 ? `saved ${picks.length} to collection` : 'saved to collection'
   }
   $('gridScroll').addEventListener('scroll', () => { $('ctxMenu').hidden = true }, { passive: true })
   $('grid').addEventListener('dragstart', event => {
@@ -376,9 +393,13 @@ function handleKeys(event) {
   if (!mod && key === '/') { event.preventDefault(); openPalette() }
   if (event.key === 'Escape') {
     if (state.zen) { setZen(false); return }
+    if (state.sel.size) { clearGridSel(); return }
     setMode('split'); clearSelection()
   }
-  if (event.key === 'Delete' || event.key === 'Backspace') { deleteSelectedBoardItem() }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    if (state.sel.size) { deleteGridSelection(); return }
+    deleteSelectedBoardItem()
+  }
   if (event.key === ']') { moveSelectedLayer(1) }
   if (event.key === '[') { moveSelectedLayer(-1) }
   if ((event.metaKey || event.ctrlKey) && key === 's') { event.preventDefault(); saveBoard() }
@@ -506,6 +527,7 @@ async function browse() {
 }
 
 async function resetGrid() {
+  clearGridSel()
   if (state.collectionId) { renderCollectionGrid(); return }
   state.gridFiles = []
   state.gridTotal = 0
@@ -562,6 +584,7 @@ function openCtxMenu(event, item) {
   state.contextItem = item
   const menu = $('ctxMenu')
   menu.querySelector('[data-ctx="uncollect"]').style.display = item.collectionItemId ? '' : 'none'
+  menu.querySelector('[data-ctx="delete"]').style.display = item.collectionItemId ? 'none' : ''
   menu.querySelector('[data-ctx="depth"]').style.display = item.media_type === 'image' ? '' : 'none'
   menu.hidden = false
   menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8) + 'px'
@@ -638,6 +661,79 @@ function setDrill(on) {
   resetGrid()
 }
 
+function gridSelToggle(idx) {
+  if (state.sel.has(idx)) state.sel.delete(idx)
+  else state.sel.add(idx)
+  state.selAnchor = idx
+  if (state.sel.size >= 3) state.selSticky = true
+  if (!state.sel.size) state.selSticky = false
+  syncGridSel()
+}
+
+function gridSelRange(idx) {
+  const from = state.selAnchor ?? idx
+  const [a, b] = from < idx ? [from, idx] : [idx, from]
+  for (let i = a; i <= b; i++) state.sel.add(i)
+  if (state.sel.size >= 3) state.selSticky = true
+  syncGridSel()
+}
+
+function clearGridSel() {
+  if (!state.sel.size && state.selAnchor === null) return
+  state.sel.clear()
+  state.selAnchor = null
+  state.selSticky = false
+  syncGridSel()
+}
+
+function syncGridSel() {
+  document.querySelectorAll('#grid [data-idx]').forEach(el =>
+    el.classList.toggle('sel', state.sel.has(+el.dataset.idx)))
+  if (state.sel.size) {
+    $('status').textContent = `${state.sel.size} selected — ⌫ delete · esc clear`
+  } else if ($('status').textContent.includes('selected')) {
+    $('status').textContent = 'ready'
+  }
+}
+
+async function deleteGridSelection() {
+  const items = [...state.sel].sort((a, b) => a - b).map(i => state.gridFiles[i]).filter(Boolean)
+  if (!items.length) return
+  if (state.collectionId) {
+    for (const it of items) {
+      if (it.collectionItemId) await api(`/api/collections/items/${it.collectionItemId}`, { method: 'DELETE' })
+    }
+    clearGridSel()
+    await loadCollections()
+    renderCollectionGrid()
+    $('status').textContent = `removed ${items.length} from collection`
+    return
+  }
+  if (!confirm(`Move ${items.length} file${items.length === 1 ? '' : 's'} to .refdeck-trash?`)) return
+  const byRoot = new Map()
+  items.forEach(it => {
+    const n = normalizeExplorerItem(it)
+    if (!byRoot.has(n.root)) byRoot.set(n.root, [])
+    byRoot.get(n.root).push(n.path)
+  })
+  let deleted = 0
+  const errors = []
+  try {
+    for (const [root, paths] of byRoot) {
+      const res = await api('/api/files/delete', { method: 'POST', headers, body: JSON.stringify({ root, paths }) })
+      deleted += res.deleted.length
+      errors.push(...Object.values(res.errors))
+    }
+  } catch (err) {
+    errors.push(err.message)
+  }
+  clearGridSel()
+  await resetGrid()
+  $('status').textContent = errors.length
+    ? `deleted ${deleted} — ${errors.length} failed: ${errors[0]}`
+    : `deleted ${deleted} — recoverable from .refdeck-trash`
+}
+
 function appendCards(files) {
   const start = state.gridFiles.length
   state.gridFiles.push(...files)
@@ -654,6 +750,7 @@ function appendDOM(files, start) {
       frag.innerHTML = `<div class="mItem" draggable="true" data-idx="${start + i}" title="${h(f.name)}"><img src="${thumbUrl(f)}" loading="lazy" /></div>`
       cols[state.masonryNext++ % cols.length].append(frag.content)
     })
+    if (state.sel.size) syncGridSel()
     return
   }
   const frag = document.createElement('template')
@@ -680,6 +777,7 @@ function appendDOM(files, start) {
       </div>`).join('')
   }
   grid.append(frag.content)
+  if (state.sel.size) syncGridSel()
 }
 
 function normalizeExplorerItem(item) {
