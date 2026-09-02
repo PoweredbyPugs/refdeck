@@ -39,6 +39,12 @@ class DeleteIn(BaseModel):
     paths: list[str]
 
 
+class HiddenIn(BaseModel):
+    root: str
+    paths: list[str]
+    hidden: bool
+
+
 class RestoreItem(BaseModel):
     path: str
     trash: str
@@ -141,13 +147,20 @@ def create_app(mount_runner=None) -> FastAPI:
     @app.get("/api/files")
     def api_files(root: str, path: str = "", recursive: int = 0, query: str = "",
                   sort: str = "name", limit: int = 200, offset: int = 0,
-                  type: str = "", exts: str = ""):
+                  type: str = "", exts: str = "", hidden: int = 0):
         if root not in roots.roots:
             raise HTTPException(status_code=400, detail=f"unknown root: {root}")
         ext_list = [e.strip().lstrip(".").lower() for e in exts.split(",") if e.strip()]
         return db.query_files(root, dir=path, recursive=bool(recursive), query=query,
                               sort=sort, limit=min(limit, 500), offset=max(offset, 0),
-                              media_type=type, exts=ext_list)
+                              media_type=type, exts=ext_list, include_hidden=bool(hidden))
+
+    @app.post("/api/files/hidden")
+    def api_set_hidden(payload: HiddenIn):
+        if payload.root not in roots.roots:
+            raise HTTPException(status_code=400, detail=f"unknown root: {payload.root}")
+        return {"updated": db.set_hidden(payload.root, payload.paths, payload.hidden),
+                "hidden": payload.hidden}
 
     @app.post("/api/scan/{root}")
     def api_scan(root: str):
@@ -331,6 +344,26 @@ def create_app(mount_runner=None) -> FastAPI:
     def api_remove_collection_item(item_id: int):
         db.remove_collection_item(item_id)
         return {"ok": True}
+
+    @app.post("/api/collections/{collection_id}/hidden")
+    def api_toggle_collection_hidden(collection_id: int):
+        col = next((c for c in db.collections() if c["id"] == collection_id), None)
+        if col is None:
+            raise HTTPException(status_code=404, detail="collection not found")
+        by_root: dict[str, list[str]] = {}
+        for it in col["items"]:
+            r, _, rel = it["path"].partition("/")
+            if r in roots.roots and rel:
+                by_root.setdefault(r, []).append(rel)
+        matched = already_hidden = 0
+        for r, paths in by_root.items():
+            m, hid = db.count_hidden(r, paths)
+            matched += m
+            already_hidden += hid
+        # toggle: hide, unless every indexed member is already hidden
+        target = not (matched > 0 and already_hidden == matched)
+        updated = sum(db.set_hidden(r, paths, target) for r, paths in by_root.items())
+        return {"hidden": target, "updated": updated}
 
     @app.get("/api/boards")
     def api_boards():

@@ -63,6 +63,22 @@ def test_upsert_and_remove_missing(tmp_path):
     assert removed == 1 and db.media_count("R") == 2
 
 
+def test_hidden_flag_filters_and_survives_rescan(tmp_path):
+    db = RefDeckDB(tmp_path / "t.db")
+    db.init([])
+    db.upsert_files("R", [_entry("a.jpg"), _entry("b.jpg")])
+    assert db.set_hidden("R", ["a.jpg"], True) == 1
+    assert [f["name"] for f in db.query_files("R")["files"]] == ["b.jpg"]
+    both = db.query_files("R", include_hidden=True)
+    assert both["total"] == 2
+    assert {f["name"]: f["hidden"] for f in both["files"]} == {"a.jpg": 1, "b.jpg": 0}
+    assert db.media_count("R") == 1  # hidden files don't count
+    db.upsert_files("R", [_entry("a.jpg", size=99)])  # rescan must not unhide
+    assert db.query_files("R")["total"] == 1
+    db.set_hidden("R", ["a.jpg"], False)
+    assert db.query_files("R")["total"] == 2
+
+
 def test_query_files_recursive_search_sort(tmp_path):
     db = RefDeckDB(tmp_path / "t.db")
     db.init([])

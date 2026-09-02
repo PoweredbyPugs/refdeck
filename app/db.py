@@ -54,6 +54,7 @@ class RefDeckDB:
                 media_type text not null,
                 size integer not null,
                 mtime integer not null,
+                hidden integer not null default 0,
                 unique(root, path)
             );
             create index if not exists idx_files_root_dir on files(root, dir);
@@ -68,6 +69,8 @@ class RefDeckDB:
                 created_at text default current_timestamp
             );
             """)
+            if "hidden" not in {r["name"] for r in con.execute("pragma table_info(files)")}:
+                con.execute("alter table files add column hidden integer not null default 0")
             current_names = []
             for name, path in roots:
                 current_names.append(name)
@@ -144,8 +147,11 @@ class RefDeckDB:
 
     def query_files(self, root: str, dir: str = "", recursive: bool = False, query: str = "",
                     sort: str = "name", limit: int = 200, offset: int = 0,
-                    media_type: str = "", exts: list[str] | None = None) -> dict:
+                    media_type: str = "", exts: list[str] | None = None,
+                    include_hidden: bool = False) -> dict:
         where, params = ["root=?"], [root]
+        if not include_hidden:
+            where.append("hidden=0")
         if recursive:
             if dir:
                 where.append("(dir=? or dir like ?)")
@@ -169,16 +175,42 @@ class RefDeckDB:
         with self.connect() as con:
             total = con.execute(f"select count(*) from files where {clause}", params).fetchone()[0]
             rows = [dict(r) for r in con.execute(
-                f"select root, path, name, dir, media_type, size, mtime from files "
+                f"select root, path, name, dir, media_type, size, mtime, hidden from files "
                 f"where {clause} order by {order} limit ? offset ?", [*params, limit, offset])]
         return {"total": total, "files": rows}
 
     def media_count(self, root: str, dir: str = "") -> int:
         with self.connect() as con:
             if dir:
-                return con.execute("select count(*) from files where root=? and (dir=? or dir like ?)",
-                                   (root, dir, dir + "/%")).fetchone()[0]
-            return con.execute("select count(*) from files where root=?", (root,)).fetchone()[0]
+                return con.execute(
+                    "select count(*) from files where root=? and hidden=0 and (dir=? or dir like ?)",
+                    (root, dir, dir + "/%")).fetchone()[0]
+            return con.execute("select count(*) from files where root=? and hidden=0",
+                               (root,)).fetchone()[0]
+
+    def set_hidden(self, root: str, paths: list[str], hidden: bool) -> int:
+        updated = 0
+        with self.connect() as con:
+            for i in range(0, len(paths), 500):
+                chunk = paths[i:i + 500]
+                marks = ",".join("?" for _ in chunk)
+                cur = con.execute(f"update files set hidden=? where root=? and path in ({marks})",
+                                  [1 if hidden else 0, root, *chunk])
+                updated += cur.rowcount
+        return updated
+
+    def count_hidden(self, root: str, paths: list[str]) -> tuple[int, int]:
+        matched = hidden = 0
+        with self.connect() as con:
+            for i in range(0, len(paths), 500):
+                chunk = paths[i:i + 500]
+                marks = ",".join("?" for _ in chunk)
+                row = con.execute(
+                    f"select count(*), coalesce(sum(hidden), 0) from files "
+                    f"where root=? and path in ({marks})", [root, *chunk]).fetchone()
+                matched += row[0]
+                hidden += row[1]
+        return matched, hidden
 
     def remove_files(self, root: str, paths: list[str]) -> None:
         with self.connect() as con:

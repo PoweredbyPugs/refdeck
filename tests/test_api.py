@@ -225,6 +225,33 @@ def test_delete_guards_bad_root_traversal_and_missing(tmp_path, monkeypatch):
     assert (media / "sub" / "nested.png").exists()  # untouched
 
 
+def test_hide_files_and_show_hidden_param(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    r = client.post("/api/files/hidden", json={"root": "Media", "paths": ["top.jpg"], "hidden": True})
+    assert r.status_code == 200 and r.json()["updated"] == 1
+    vis = client.get("/api/files", params={"root": "Media", "recursive": 1}).json()
+    assert [f["name"] for f in vis["files"]] == ["nested.png"]
+    everything = client.get("/api/files", params={"root": "Media", "recursive": 1, "hidden": 1}).json()
+    assert everything["total"] == 2
+    assert {f["name"]: f["hidden"] for f in everything["files"]}["top.jpg"] == 1
+    assert client.post("/api/files/hidden",
+                       json={"root": "Nope", "paths": ["x"], "hidden": True}).status_code == 400
+
+
+def test_collection_hidden_toggle(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    col = client.post("/api/collections", json={"title": "C"}).json()
+    for p in ("Media/top.jpg", "Media/sub/nested.png"):
+        client.post(f"/api/collections/{col['id']}/items", json={"path": p, "media_type": "image"})
+    r = client.post(f"/api/collections/{col['id']}/hidden").json()
+    assert r["hidden"] is True and r["updated"] == 2
+    assert client.get("/api/files", params={"root": "Media", "recursive": 1}).json()["total"] == 0
+    r = client.post(f"/api/collections/{col['id']}/hidden").json()
+    assert r["hidden"] is False
+    assert client.get("/api/files", params={"root": "Media", "recursive": 1}).json()["total"] == 2
+    assert client.post("/api/collections/9999/hidden").status_code == 404
+
+
 def test_insp_indexed_and_served_as_full_res_jpeg(tmp_path, monkeypatch):
     # Insta360 .insp panoramas are JPEG bytes under another name; they must be
     # indexed as images and served untouched (full res, explicit image/jpeg)

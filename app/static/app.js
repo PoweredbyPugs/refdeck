@@ -13,6 +13,8 @@ const state = {
   selSticky: false,
   gridUndo: [],
   lastUndoScope: 'board',
+  showHidden: false,
+  cctxId: null,
   typeFilter: '',
   extActive: new Set(),
   treeExpanded: new Set(),
@@ -238,9 +240,26 @@ async function init() {
     if (!event.target.closest('#ctxMenu')) $('ctxMenu').hidden = true
     if (!event.target.closest('#bctx')) $('bctx').hidden = true
     if (!event.target.closest('#tctx')) $('tctx').hidden = true
+    if (!event.target.closest('#cctx')) $('cctx').hidden = true
     if (!event.target.closest('#cpick')) $('cpick').hidden = true
     if (!event.target.closest('#palette')) closePalette()
   })
+  $('cctx').onclick = async event => {
+    const button = event.target.closest('button[data-c]')
+    $('cctx').hidden = true
+    if (!button || state.cctxId === null) return
+    if (button.dataset.c === 'togglehidden') {
+      try {
+        const res = await api(`/api/collections/${state.cctxId}/hidden`, { method: 'POST', headers })
+        $('status').textContent = res.hidden
+          ? `collection contents hidden (${res.updated} files) — ⇧H reveals`
+          : `collection contents visible (${res.updated} files)`
+        if (!state.collectionId) await resetGrid()
+      } catch (err) {
+        $('status').textContent = `hide failed: ${err.message}`
+      }
+    }
+  }
   $('cpick').onclick = async event => {
     const button = event.target.closest('button[data-cid]')
     $('cpick').hidden = true
@@ -291,7 +310,10 @@ async function init() {
     if (event.key === '0') { event.preventDefault(); pvResetZoom() }
     if (event.key.toLowerCase() === 'i') { event.preventDefault(); pvDetailsToggle() }
     if (event.key.toLowerCase() === 'r' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); pvRotate(event.shiftKey ? -1 : 1) }
-    if (event.key.toLowerCase() === 'h' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); pvFlip('x') }
+    if (event.key.toLowerCase() === 'h' && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault()
+      state.pvDetailsOpen ? pvToggleHidden() : pvFlip('x')  // details open: H = hide/unhide
+    }
     if (event.key.toLowerCase() === 'v' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); pvFlip('y') }
     if (event.key === '1') { event.preventDefault(); pvOriginalSize() }
     if (event.key.toLowerCase() === 'm' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); toggleDepthCompare() }
@@ -399,6 +421,13 @@ function handleKeys(event) {
   if (!mod && key === 'c') { event.preventDefault(); setMode(state.mode === 'canvas' ? 'split' : 'canvas') }
   if (!mod && key === 'e') { event.preventDefault(); setMode(state.mode === 'explorer' ? 'split' : 'explorer') }
   if (!mod && key === 'd') { event.preventDefault(); setDrill(!state.drill) }
+  if (!mod && event.shiftKey && key === 'h') {
+    event.preventDefault()
+    state.showHidden = !state.showHidden
+    resetGrid()
+    $('status').textContent = state.showHidden ? 'showing hidden files' : 'hidden files concealed'
+    return
+  }
   if (!mod && key === 'f') { event.preventDefault(); setSidebarHidden(!state.sidebarHidden) }
   if (!mod && key === 'z') { event.preventDefault(); setZen(!state.zen) }
   if (!mod && key === 'n') { event.preventDefault(); addNoteAt(viewportCenterWorld()) }
@@ -653,7 +682,7 @@ async function loadMore() {
     const params = new URLSearchParams({
       root: state.root, path: state.path, recursive: state.drill ? '1' : '0',
       query: state.filter.trim(), sort: state.sort, limit: PAGE, offset: state.gridOffset,
-      type: state.typeFilter, exts
+      type: state.typeFilter, exts, hidden: state.showHidden ? '1' : '0'
     })
     const page = await api(`/api/files?${params}`)
     state.gridTotal = page.total
@@ -1020,7 +1049,30 @@ function renderPvDetails() {
     const duration = formatDuration(media.duration)
     if (duration) rows.push(['Duration', duration])
   }
-  panel.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${h(label)}</dt><dd>${h(value)}</dd>`).join('')}</dl>`
+  const eye = item.hidden === undefined ? '' :
+    `<dt>Visibility</dt><dd><button class="eyeBtn${item.hidden ? ' off' : ''}" id="pvEyeBtn">${item.hidden ? '⌀ hidden' : '👁 visible'} <kbd>H</kbd></button></dd>`
+  panel.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${h(label)}</dt><dd>${h(value)}</dd>`).join('')}${eye}</dl>`
+  const eyeBtn = $('pvEyeBtn')
+  if (eyeBtn) eyeBtn.onclick = pvToggleHidden
+}
+
+async function pvToggleHidden() {
+  const item = state.previewItem
+  if (!item || item.hidden === undefined) return
+  const n = normalizeExplorerItem(item)
+  const target = !item.hidden
+  try {
+    await api('/api/files/hidden', { method: 'POST', headers, body: JSON.stringify({ root: n.root, paths: [n.path], hidden: target }) })
+  } catch (err) {
+    $('status').textContent = `hide failed: ${err.message}`
+    return
+  }
+  item.hidden = target ? 1 : 0
+  renderPvDetails()
+  if (target && !state.showHidden && !state.collectionId && state.previewIndex !== null) {
+    removeGridItems([state.previewIndex])  // concealed from the explorer the moment it's hidden
+  }
+  $('status').textContent = target ? 'hidden — ⇧H reveals hidden files' : 'visible'
 }
 
 function pvMedia() { return $('previewBody').firstElementChild }
@@ -1227,7 +1279,18 @@ function renderCollections() {
       <span class="cdate" title="last save">${fmtShortDate(c.updated_at)}</span>
       <button class="mini" data-delcollection="${c.id}">✕</button>
     </div>`).join('') || '<div class="hint">Right-click any file → Save to collection.</div>'
-  document.querySelectorAll('[data-collectionid]').forEach(row => row.onclick = () => openCollection(+row.dataset.collectionid))
+  document.querySelectorAll('[data-collectionid]').forEach(row => {
+    row.onclick = () => openCollection(+row.dataset.collectionid)
+    row.oncontextmenu = event => {
+      event.preventDefault()
+      state.cctxId = +row.dataset.collectionid
+      const menu = $('cctx')
+      menu.innerHTML = '<button data-c="togglehidden">Hide / show contents</button>'
+      menu.hidden = false
+      menu.style.left = Math.min(event.clientX, window.innerWidth - 230) + 'px'
+      menu.style.top = Math.min(event.clientY, window.innerHeight - 80) + 'px'
+    }
+  })
   document.querySelectorAll('[data-delcollection]').forEach(b => b.onclick = async event => {
     event.stopPropagation()
     if (!confirm('Delete this collection?')) return
