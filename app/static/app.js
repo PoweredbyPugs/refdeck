@@ -532,11 +532,13 @@ async function deleteTreeFolder(root, path) {
     res = await api('/api/files/delete', { method: 'POST', headers, body: JSON.stringify({ root, paths: [path] }) })
   } catch (err) {
     $('status').textContent = `delete failed: ${err.message}`
+    alert(`Delete failed: ${err.message}`)
     return
   }
   const firstError = Object.values(res.errors)[0]
   if (!res.deleted.length) {
     $('status').textContent = `delete failed: ${firstError || 'unknown error'}`
+    alert(`Delete failed: ${firstError || 'unknown error'}`)
     return
   }
   state.gridUndo.push([{ root, items: res.deleted }])
@@ -783,6 +785,7 @@ async function deleteGridSelection() {
   }
   clearGridSel()
   removeGridItems(hideIdx)
+  if (!deleted && errors.length) alert(`Delete failed: ${errors[0]}`)  // total failure must be loud
   $('status').textContent = errors.length
     ? `deleted ${deleted} — ${errors.length} failed: ${errors[0]}`
     : `deleted ${deleted} — ⌘Z to undo`
