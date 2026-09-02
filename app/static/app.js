@@ -310,10 +310,8 @@ async function init() {
     if (event.key === '0') { event.preventDefault(); pvResetZoom() }
     if (event.key.toLowerCase() === 'i') { event.preventDefault(); pvDetailsToggle() }
     if (event.key.toLowerCase() === 'r' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); pvRotate(event.shiftKey ? -1 : 1) }
-    if (event.key.toLowerCase() === 'h' && !event.metaKey && !event.ctrlKey) {
-      event.preventDefault()
-      state.pvDetailsOpen ? pvToggleHidden() : pvFlip('x')  // details open: H = hide/unhide
-    }
+    if (event.key.toLowerCase() === 'h' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); pvFlip('x') }
+    if (event.key.toLowerCase() === 'a' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); pvToggleHidden() }
     if (event.key.toLowerCase() === 'v' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); pvFlip('y') }
     if (event.key === '1') { event.preventDefault(); pvOriginalSize() }
     if (event.key.toLowerCase() === 'm' && !event.metaKey && !event.ctrlKey) { event.preventDefault(); toggleDepthCompare() }
@@ -1050,7 +1048,7 @@ function renderPvDetails() {
     if (duration) rows.push(['Duration', duration])
   }
   const eye = item.hidden === undefined ? '' :
-    `<dt>Visibility</dt><dd><button class="eyeBtn${item.hidden ? ' off' : ''}" id="pvEyeBtn">${item.hidden ? '⌀ hidden' : '👁 visible'} <kbd>H</kbd></button></dd>`
+    `<dt>Visibility</dt><dd><button class="eyeBtn${item.hidden ? ' off' : ''}" id="pvEyeBtn">${item.hidden ? '⌀ hidden' : '👁 visible'} <kbd>A</kbd></button></dd>`
   panel.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${h(label)}</dt><dd>${h(value)}</dd>`).join('')}${eye}</dl>`
   const eyeBtn = $('pvEyeBtn')
   if (eyeBtn) eyeBtn.onclick = pvToggleHidden
