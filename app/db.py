@@ -58,6 +58,12 @@ class RefDeckDB:
                 unique(root, path)
             );
             create index if not exists idx_files_root_dir on files(root, dir);
+            create table if not exists dirs (
+                root text not null,
+                path text not null,
+                mtime integer not null,
+                unique(root, path)
+            );
             create table if not exists mounts (
                 id integer primary key autoincrement,
                 name text unique not null,
@@ -134,6 +140,46 @@ class RefDeckDB:
         with self.connect() as con:
             con.execute("delete from files where root=? and (dir=? or dir like ?)",
                         (root, dirpath, dirpath + "/%"))
+
+    # dirs = per-directory mtime_ns index (ns so a change within the same
+    # second as the last scan is still caught); powers the quick scan
+    def known_dirs(self, root: str) -> dict[str, int]:
+        with self.connect() as con:
+            return {r["path"]: r["mtime"]
+                    for r in con.execute("select path, mtime from dirs where root=?", (root,))}
+
+    def upsert_dirs(self, root: str, entries: list[dict]) -> None:
+        with self.connect() as con:
+            for e in entries:
+                con.execute(
+                    "insert into dirs(root, path, mtime) values(?,?,?) "
+                    "on conflict(root, path) do update set mtime=excluded.mtime",
+                    (root, e["path"], e["mtime"]))
+
+    def replace_dirs(self, root: str, entries: list[dict]) -> None:
+        with self.connect() as con:
+            con.execute("delete from dirs where root=?", (root,))
+            con.executemany("insert into dirs(root, path, mtime) values(?,?,?)",
+                            [(root, e["path"], e["mtime"]) for e in entries])
+
+    def remove_dir_index(self, root: str, dirpath: str) -> None:
+        with self.connect() as con:
+            con.execute("delete from dirs where root=? and (path=? or path like ?)",
+                        (root, dirpath, dirpath + "/%"))
+
+    def dir_file_meta(self, root: str, dirpath: str) -> dict[str, tuple[int, int]]:
+        with self.connect() as con:
+            return {r["path"]: (r["size"], r["mtime"]) for r in con.execute(
+                "select path, size, mtime from files where root=? and dir=?", (root, dirpath))}
+
+    def sync_dir_files(self, root: str, dirpath: str, seen: set[str]) -> int:
+        with self.connect() as con:
+            gone = [r["path"] for r in con.execute(
+                "select path from files where root=? and dir=?", (root, dirpath))
+                if r["path"] not in seen]
+        if gone:
+            self.remove_files(root, gone)
+        return len(gone)
 
     def remove_missing(self, root: str, seen: set[str]) -> int:
         with self.connect() as con:

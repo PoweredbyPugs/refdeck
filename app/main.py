@@ -173,10 +173,10 @@ def create_app(mount_runner=None) -> FastAPI:
                 "hidden": payload.hidden}
 
     @app.post("/api/scan/{root}")
-    def api_scan(root: str):
+    def api_scan(root: str, quick: bool = False):
         if root not in roots.roots:
             raise HTTPException(status_code=400, detail=f"unknown root: {root}")
-        return {"started": scanner.start(root)}
+        return {"started": scanner.start(root, quick=quick)}
 
     @app.get("/api/scan/status")
     def api_scan_status():

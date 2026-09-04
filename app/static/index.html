@@ -7,7 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="stylesheet" href="/style.css?v=35" />
+  <link rel="stylesheet" href="/style.css?v=36" />
   <link rel="stylesheet" href="/vendor/psv-core.css" />
   <script type="importmap">{ "imports": { "three": "/vendor/three.module.js" } }</script>
 </head>
@@ -30,6 +30,7 @@
       <button id="saveBoard" class="ghost" title="Save board (⌘S)">Save</button>
       <span class="vr"></span>
       <button id="zenToggle" class="ghost icon" title="Zen mode (Z)">◎</button>
+      <button id="reloadChanges" class="ghost icon" title="Reload changes (R)">⟳</button>
       <button id="openSettings" class="ghost icon" title="Settings">⚙</button>
     </div>
   </header>
@@ -148,6 +149,7 @@
       <div class="hkRow"><kbd>Z</kbd><span>zen mode — hover top/left edges for UI</span></div>
       <div class="hkRow"><kbd>F</kbd><span>show / hide sidebar</span></div>
       <div class="hkRow"><kbd>D</kbd><span>toggle drill down</span></div>
+      <div class="hkRow"><kbd>R</kbd><span>reload changes — quick pickup of new / deleted files</span></div>
       <div class="hkGroup">Explorer</div>
       <div class="hkRow"><kbd>⌃click</kbd><span>select / deselect (or <kbd>⌘click</kbd>) — 3+ selected: plain click toggles too</span></div>
       <div class="hkRow"><kbd>⇧click</kbd><span>select range from last click</span></div>
@@ -212,6 +214,6 @@
       <button data-pv="close">Close <kbd>Esc</kbd></button>
     </div>
   </dialog>
-  <script src="/app.js?v=35"></script>
+  <script src="/app.js?v=36"></script>
 </body>
 </html>

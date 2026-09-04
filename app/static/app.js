@@ -26,6 +26,7 @@ const state = {
   view: localStorage.getItem('refdeck.view') || 'masonry',
   sidebarHidden: localStorage.getItem('refdeck.sidebarHidden') === '1',
   zen: false,
+  reloadPending: false,
   previewIndex: null,
   previewItem: null,
   pvDetailsOpen: false,
@@ -167,6 +168,7 @@ async function init() {
   $('modeSplit').onclick = () => setMode('split')
   $('modeCanvas').onclick = () => setMode('canvas')
   $('zenToggle').onclick = () => setZen(!state.zen)
+  $('reloadChanges').onclick = reloadChanges
   syncModeSeg()
   $('zoomOut').onclick = () => zoomAtCenter(0.82)
   $('zoomIn').onclick = () => zoomAtCenter(1.22)
@@ -445,6 +447,7 @@ function handleKeys(event) {
     return
   }
   if (!mod && !event.shiftKey && key === 'a' && state.sel.size) { event.preventDefault(); hideGridSelection(); return }
+  if (!mod && !event.shiftKey && key === 'r') { event.preventDefault(); reloadChanges(); return }
   if (!mod && key === 'f') { event.preventDefault(); setSidebarHidden(!state.sidebarHidden) }
   if (!mod && key === 'z') { event.preventDefault(); setZen(!state.zen) }
   if (!mod && key === 'n') { event.preventDefault(); addNoteAt(viewportCenterWorld()) }
@@ -1550,10 +1553,36 @@ async function pollScan() {
       .join(' · ')
     clearTimeout(scanTimer)
     scanTimer = setTimeout(pollScan, 3000)
+  } else if (state.reloadPending) {
+    finishReload()
   } else if (/^(scanning|caching)/.test($('status').textContent)) {
     $('status').textContent = 'scan complete'
     refreshRoots()
   }
+}
+
+async function reloadChanges() {
+  if (state.reloadPending) return
+  state.reloadPending = true
+  $('reloadChanges').classList.add('active')
+  $('status').textContent = 'reloading changes…'
+  await Promise.all(state.roots.map(r =>
+    api(`/api/scan/${encodeURIComponent(r.name)}?quick=1`, { method: 'POST' }).catch(() => {})))
+  pollScan()
+}
+
+async function finishReload() {
+  state.reloadPending = false
+  $('reloadChanges').classList.remove('active')
+  state.treeChildren.clear()  // new/removed folders must show up in the sidebar
+  await refreshRoots()
+  await Promise.all([...state.treeExpanded].map(key => {
+    const [r, p] = key.split('\x00')
+    return ensureChildren(r, p)
+  }))
+  renderTree()
+  await resetGrid()
+  $('status').textContent = 'up to date'
 }
 
 function setupBoardViewport() {

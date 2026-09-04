@@ -74,6 +74,18 @@ def test_files_flat_vs_drill_and_rescan(tmp_path, monkeypatch):
     assert client.get("/api/scan/status").json()["Media"]["state"] == "idle"
 
 
+def test_quick_scan_endpoint(tmp_path, monkeypatch):
+    # quick=1 must run the incremental scan, not a full walk: an in-place
+    # utime on a file in an untouched dir stays stale (full scan would update it)
+    import os
+    client, media = make_client(tmp_path, monkeypatch)
+    old = client.get("/api/files", params={"root": "Media", "path": "sub"}).json()["files"][0]["mtime"]
+    os.utime(media / "sub" / "nested.png", (old + 999, old + 999))
+    assert client.post("/api/scan/Media", params={"quick": 1}).json()["started"] is True
+    client.app.state.scanner.wait("Media")
+    assert client.get("/api/files", params={"root": "Media", "path": "sub"}).json()["files"][0]["mtime"] == old
+
+
 def test_media_thumb_preview_404_when_gone(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
     for endpoint in ("/api/media", "/api/thumb", "/api/preview"):
