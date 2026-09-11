@@ -108,3 +108,26 @@ def test_query_files_type_and_ext_filters(tmp_path):
     assert {f["name"] for f in jpgs["files"]} == {"a.jpg", "d.jpeg"}
     pngs = db.query_files("R", recursive=True, media_type="image", exts=["png"])
     assert [f["name"] for f in pngs["files"]] == ["b.PNG"]
+
+
+def test_backup_snapshots_and_prunes(tmp_path):
+    db = RefDeckDB(tmp_path / "refdeck.db")
+    db.init([])
+    db.create_collection("Kitchen")
+    dest = tmp_path / "backups"
+
+    made = db.backup(dest, stamp="2026-09-11")
+    copy = RefDeckDB(made)
+    assert [c["title"] for c in copy.collections()] == ["Kitchen"]
+
+    # same-day backup overwrites, doesn't accumulate
+    db.backup(dest, stamp="2026-09-11")
+    assert len(list(dest.glob("refdeck-*.db"))) == 1
+
+    # only the newest `keep` snapshots survive
+    for day in range(1, 9):
+        db.backup(dest, stamp=f"2026-09-0{day}")
+    names = sorted(p.name for p in dest.glob("refdeck-*.db"))
+    assert len(names) == 7
+    assert names[0] == "refdeck-2026-09-03.db"  # oldest pruned as each backup ran
+    assert names[-1] == "refdeck-2026-09-11.db"

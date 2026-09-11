@@ -88,6 +88,23 @@ class RefDeckDB:
                 placeholders = ",".join("?" for _ in current_names)
                 con.execute(f"delete from roots where name not in ({placeholders})", current_names)
 
+    def backup(self, dest_dir: Path, keep: int = 7, stamp: str | None = None) -> Path:
+        """Consistent snapshot via sqlite's backup API; keeps the newest `keep`.
+
+        One file per day (same-day runs overwrite), so `keep` = days retained.
+        """
+        from datetime import date
+        dest_dir = Path(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"refdeck-{stamp or date.today().isoformat()}.db"
+        with self.connect() as src, sqlite3.connect(dest) as out:
+            src.backup(out)
+        out.close()
+        src.close()
+        for old in sorted(dest_dir.glob("refdeck-*.db"))[:-keep]:
+            old.unlink()
+        return dest
+
     def roots(self) -> list[dict]:
         with self.connect() as con:
             return [dict(r) for r in con.execute("select id, name, path from roots order by name")]

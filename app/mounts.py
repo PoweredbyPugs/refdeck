@@ -77,6 +77,20 @@ class MountManager:
                 root_path = self.base / record["name"]
             self.roots.add(record["name"], root_path)
 
+    def retry(self, name: str) -> bool:
+        """Re-attempt a failed mount (reload hits this before scanning)."""
+        record = next((r for r in self.db.list_mounts() if r["name"] == name), None)
+        if record is None:
+            return False
+        try:
+            root_path = self._mount(record)
+        except MountError as exc:
+            self.errors[name] = str(exc)
+            return False
+        self.errors.pop(name, None)
+        self.roots.add(name, root_path)
+        return True
+
     def listing(self) -> list[dict]:
         out = []
         for record in self.db.list_mounts():

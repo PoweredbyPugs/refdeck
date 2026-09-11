@@ -86,6 +86,12 @@ def test_quick_scan_endpoint(tmp_path, monkeypatch):
     assert client.get("/api/files", params={"root": "Media", "path": "sub"}).json()["files"][0]["mtime"] == old
 
 
+def test_startup_snapshots_database(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    with client:  # context manager runs startup events
+        assert list((tmp_path / "data" / "backups").glob("refdeck-*.db"))
+
+
 def test_media_thumb_preview_404_when_gone(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
     for endpoint in ("/api/media", "/api/thumb", "/api/preview"):

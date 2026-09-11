@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -132,15 +133,39 @@ def create_app(mount_runner=None) -> FastAPI:
 
     @app.on_event("startup")
     def startup():
+        # snapshot BEFORE anything can touch the DB — boards/collections/
+        # hidden-flags have no other safety net, and a scan against a broken
+        # mount once pruned a root's whole index at startup
+        try:
+            db.backup(data / "backups")
+        except Exception:
+            pass  # a backup failure must never block startup
         mounts.restore_all()
         for base in roots.roots.values():
-            if Path(base).is_dir():
-                purge_trash(Path(base))  # undo doesn't survive a restart; deletes are final
-        scanner.start_all()
+            try:
+                if Path(base).is_dir():
+                    purge_trash(Path(base))  # undo doesn't survive a restart; deletes are final
+            except OSError:
+                pass  # dead network mount — nothing to purge
+        # a failed mount is a bare empty dir; scanning it is at best useless
+        for name in roots.roots:
+            if name not in mounts.errors:
+                scanner.start(name)
+        def backup_loop():  # long-running containers still get dailies
+            while True:
+                time.sleep(24 * 3600)
+                try:
+                    db.backup(data / "backups")
+                except Exception:
+                    pass
+        threading.Thread(target=backup_loop, daemon=True).start()
 
     @app.get("/api/roots")
     def api_roots():
-        return [s | {"media_count": db.media_count(s["name"])} for s in roots.status()]
+        # a failed mount leaves an is_dir()-able empty dir — mount errors win
+        return [s | {"media_count": db.media_count(s["name"]),
+                     "online": s["online"] and s["name"] not in mounts.errors}
+                for s in roots.status()]
 
     @app.get("/api/browse")
     def api_browse(root: str = Query(...), path: str = ""):
@@ -176,6 +201,8 @@ def create_app(mount_runner=None) -> FastAPI:
     def api_scan(root: str, quick: bool = False):
         if root not in roots.roots:
             raise HTTPException(status_code=400, detail=f"unknown root: {root}")
+        if root in mounts.errors and not mounts.retry(root):
+            return {"started": False, "offline": True}
         return {"started": scanner.start(root, quick=quick)}
 
     @app.get("/api/scan/status")
