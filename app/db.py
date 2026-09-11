@@ -233,6 +233,10 @@ class RefDeckDB:
                 f"where {clause} order by {order} limit ? offset ?", [*params, limit, offset])]
         return {"total": total, "files": rows}
 
+    def file_count(self, root: str) -> int:
+        with self.connect() as con:
+            return con.execute("select count(*) from files where root=?", (root,)).fetchone()[0]
+
     def media_count(self, root: str, dir: str = "") -> int:
         with self.connect() as con:
             if dir:

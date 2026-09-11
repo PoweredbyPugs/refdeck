@@ -193,7 +193,18 @@ class ScanManager:
     def _run(self, root: str, quick: bool = False) -> None:
         try:
             base = self.roots.roots.get(root)
-            if base is None or not base.is_dir():
+            try:
+                if base is None or not base.is_dir():
+                    return
+                # a failed CIFS/bind mount leaves a bare empty dir at the mount
+                # point — walking it would prune the entire index. A real root
+                # that had files is never COMPLETELY empty (trash/dot debris).
+                if not any(base.iterdir()) and self.db.file_count(root):
+                    with self._lock:
+                        self._status[root]["error"] = \
+                            "root is empty but index is not — unmounted? scan skipped"
+                    return
+            except OSError:  # dead network mount (EHOSTDOWN): offline, nothing to scan
                 return
             # quick scan needs a populated dir index; a pre-dirs DB (or first
             # run) falls back to the full walk, which builds it

@@ -38,6 +38,24 @@ def test_dynamic_roots_and_status(tmp_path):
     assert [s["name"] for s in roots.status()] == ["Good"]
 
 
+def test_dead_mount_host_reports_offline(tmp_path, monkeypatch):
+    # A CIFS mount whose server vanished raises EHOSTDOWN on stat — pathlib
+    # only swallows benign errors, so is_dir() raises and /api/roots 500'd,
+    # taking the whole UI down. A dead host must just read as offline.
+    dead = tmp_path / "dead-mount"
+    dead.mkdir()
+    real_is_dir = Path.is_dir
+
+    def host_down(self, **kwargs):
+        if self.name == "dead-mount":
+            raise OSError(112, "Host is down", str(self))
+        return real_is_dir(self, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", host_down)
+    roots = MediaRoots({"Dead": dead})
+    assert [s["online"] for s in roots.status()] == [False]
+
+
 def test_list_dirs_only(tmp_path):
     base = tmp_path / "base"
     (base / "sub").mkdir(parents=True)

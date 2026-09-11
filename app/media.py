@@ -39,7 +39,9 @@ class MediaRoots:
         self.roots.pop(name, None)
 
     def status(self) -> list[dict]:
-        return [{"name": name, "path": str(path), "online": path.is_dir()}
+        # _is_dir, not is_dir: a dead CIFS mount raises EHOSTDOWN on stat,
+        # which must read as offline instead of 500ing /api/roots
+        return [{"name": name, "path": str(path), "online": _is_dir(path)}
                 for name, path in sorted(self.roots.items())]
 
     def resolve(self, root: str, rel_path: str = "") -> Path:

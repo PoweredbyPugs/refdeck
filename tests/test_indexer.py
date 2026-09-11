@@ -185,6 +185,56 @@ def test_quick_scan_honors_ignore_marker_add_and_remove(tmp_path, monkeypatch):
     assert db.media_count("R") == 3
 
 
+def test_scan_of_dead_mount_root_is_noop(tmp_path, monkeypatch):
+    # A dead CIFS host raises EHOSTDOWN on stat; the reload button scans ALL
+    # roots, so a dead one must no-op instead of killing the scan thread.
+    import threading
+    base, db, scanner = make_scanner(tmp_path, monkeypatch)
+    real_is_dir = Path.is_dir
+
+    def host_down(self, **kwargs):
+        if self == base:
+            raise OSError(112, "Host is down", str(self))
+        return real_is_dir(self, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", host_down)
+    errors = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: errors.append(args))
+    scan(scanner, quick=True)
+    assert errors == []
+    assert scanner.status()["R"]["state"] == "idle"
+
+
+def test_empty_root_with_populated_index_skips_scan(tmp_path, monkeypatch):
+    # A failed CIFS mount leaves a bare empty dir at the mount point; a
+    # "complete" walk of it would prune the whole index (lost 9453 rows to
+    # this on 2026-09-11). Empty dir + non-empty index = unmounted, skip.
+    import shutil as sh
+    base, db, scanner = make_scanner(tmp_path, monkeypatch)
+    scan(scanner)
+    assert db.media_count("R") == 3
+    sh.rmtree(base)
+    base.mkdir()  # empty mount-point dir, as after a failed mount
+    for quick in (False, True):
+        scan(scanner, quick=quick)
+        assert db.media_count("R") == 3  # index preserved
+        assert "unmounted" in scanner.status()["R"].get("error", "")
+
+
+def test_truly_emptied_root_still_prunes_on_rescan(tmp_path, monkeypatch):
+    # The unmount guard keys on a COMPLETELY empty dir — a root the user
+    # really emptied still has the trash/marker/dot debris a mounted drive
+    # accumulates, so a rescan there must prune as usual.
+    import shutil as sh
+    base, db, scanner = make_scanner(tmp_path, monkeypatch)
+    scan(scanner)
+    sh.rmtree(base)
+    base.mkdir()
+    (base / ".DS_Store").write_bytes(b"")
+    scan(scanner)
+    assert db.media_count("R") == 0
+
+
 def test_scan_manager_indexes_and_reports(tmp_path, monkeypatch):
     import app.indexer as indexer
     monkeypatch.setattr(indexer, "free_bytes", lambda p: 10 * 1024 ** 3)
