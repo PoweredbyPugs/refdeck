@@ -169,6 +169,9 @@ async function init() {
   $('modeCanvas').onclick = () => setMode('canvas')
   $('zenToggle').onclick = () => setZen(!state.zen)
   $('reloadChanges').onclick = reloadChanges
+  // the server watchdog reconnects drives on its own — keep the sidebar's
+  // online/offline state and counts in step with it
+  setInterval(() => { if (!document.hidden) refreshRoots() }, 45000)
   syncModeSeg()
   $('zoomOut').onclick = () => zoomAtCenter(0.82)
   $('zoomIn').onclick = () => zoomAtCenter(1.22)

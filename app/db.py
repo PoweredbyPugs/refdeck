@@ -64,6 +64,11 @@ class RefDeckDB:
                 mtime integer not null,
                 unique(root, path)
             );
+            create table if not exists hidden_marks (
+                root text not null,
+                path text not null,
+                unique(root, path)
+            );
             create table if not exists mounts (
                 id integer primary key autoincrement,
                 name text unique not null,
@@ -77,6 +82,10 @@ class RefDeckDB:
             """)
             if "hidden" not in {r["name"] for r in con.execute("pragma table_info(files)")}:
                 con.execute("alter table files add column hidden integer not null default 0")
+            # hidden choices are user data; files rows are disposable index.
+            # Seed marks from legacy flags (idempotent) so they survive prunes.
+            con.execute("insert or ignore into hidden_marks(root, path) "
+                        "select root, path from files where hidden=1")
             current_names = []
             for name, path in roots:
                 current_names.append(name)
@@ -152,6 +161,9 @@ class RefDeckDB:
                     "on conflict(root, path) do update set name=excluded.name, dir=excluded.dir, "
                     "media_type=excluded.media_type, size=excluded.size, mtime=excluded.mtime",
                     (root, e["path"], e["name"], e["dir"], e["media_type"], e["size"], e["mtime"]))
+            # restore durable hidden marks onto (re)indexed rows
+            con.execute("update files set hidden=1 where root=? and hidden=0 and "
+                        "path in (select path from hidden_marks where root=?)", (root, root))
 
     def remove_dir_files(self, root: str, dirpath: str) -> None:
         with self.connect() as con:
@@ -272,6 +284,12 @@ class RefDeckDB:
                 cur = con.execute(f"update files set hidden=? where root=? and path in ({marks})",
                                   [1 if hidden else 0, root, *chunk])
                 updated += cur.rowcount
+                if hidden:
+                    con.executemany("insert or ignore into hidden_marks(root, path) values(?,?)",
+                                    [(root, p) for p in chunk])
+                else:
+                    con.execute(f"delete from hidden_marks where root=? and path in ({marks})",
+                                [root, *chunk])
         return updated
 
     def hidden_paths(self, root: str, paths: list[str]) -> set[str]:

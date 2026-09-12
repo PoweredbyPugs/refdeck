@@ -88,6 +88,30 @@ def test_scan_of_failed_mount_retries_mount_first(tmp_path, monkeypatch):
         assert {r["name"]: r["online"] for r in dead.get("/api/roots").json()}["NAS"] is True
 
 
+def test_health_check_marks_dead_mounts_and_reconnects(tmp_path, monkeypatch):
+    # The watchdog pass: a mount whose dir goes empty/unreachable is marked
+    # offline (with a lazy umount so remounting can work later); once it
+    # mounts again it is reported back for rescanning.
+    runner = FakeRunner()
+    client = make_client(tmp_path, monkeypatch, runner)
+    client.post("/api/mounts", json={"name": "NAS", "server": "x", "share": "y"})
+    mounts = client.app.state.mounts
+    share = tmp_path / "mnt" / "NAS"
+    (share / "pic.jpg").write_bytes(b"x")  # share has content = alive
+
+    assert mounts.check_health() == []
+    assert "NAS" not in mounts.errors
+
+    (share / "pic.jpg").unlink()  # share went dark (empty mount point)
+    assert mounts.check_health() == []
+    assert "NAS" in mounts.errors
+    assert any(c[:2] == ["umount", "-l"] for c in runner.calls)
+
+    (share / "pic.jpg").write_bytes(b"x")  # host is back
+    assert mounts.check_health() == ["NAS"]
+    assert "NAS" not in mounts.errors
+
+
 def test_bad_mount_name_rejected(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch, FakeRunner())
     resp = client.post("/api/mounts", json={"name": "../evil", "server": "x", "share": "y"})

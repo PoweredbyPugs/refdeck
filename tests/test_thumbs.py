@@ -42,3 +42,30 @@ def test_make_preview_converts_tiff(tmp_path):
     with Image.open(out) as img:
         assert img.format == "JPEG"
         assert max(img.size) <= 2048
+
+
+def test_cache_hit_refreshes_thumb_age(tmp_path):
+    # Serving a cached thumb must bump its mtime so the staleness sweep
+    # only ever removes thumbs nobody has needed for the whole TTL.
+    import os
+    src = tmp_path / "pic.png"
+    make_image(src, size=(100, 100))
+    cache = tmp_path / "cache"
+    thumb = make_thumb(src, cache)
+    os.utime(thumb, (1, 1))
+    make_thumb(src, cache)
+    assert thumb.stat().st_mtime > 1
+
+
+def test_sweep_cache_deletes_only_stale(tmp_path):
+    import os
+    from app.thumbs import sweep_cache
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    old = cache / "old.jpg"
+    old.write_bytes(b"x")
+    os.utime(old, (1, 1))
+    fresh = cache / "fresh.jpg"
+    fresh.write_bytes(b"x")
+    assert sweep_cache(cache, ttl_days=90) == 1
+    assert not old.exists() and fresh.exists()

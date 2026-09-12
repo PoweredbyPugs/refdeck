@@ -78,10 +78,13 @@ class MountManager:
             self.roots.add(record["name"], root_path)
 
     def retry(self, name: str) -> bool:
-        """Re-attempt a failed mount (reload hits this before scanning)."""
+        """Re-attempt a failed mount (reload and the watchdog hit this)."""
         record = next((r for r in self.db.list_mounts() if r["name"] == name), None)
         if record is None:
             return False
+        # a mount that died while attached leaves a stale kernel mount that
+        # blocks remounting — lazy-detach first (no-op if nothing is mounted)
+        self.runner(["umount", "-l", str(self.base / name)], capture_output=True, text=True)
         try:
             root_path = self._mount(record)
         except MountError as exc:
@@ -90,6 +93,31 @@ class MountManager:
         self.errors.pop(name, None)
         self.roots.add(name, root_path)
         return True
+
+    def _alive(self, name: str) -> bool:
+        path = self.roots.roots.get(name)
+        try:
+            # an empty dir is what a dead/failed mount looks like; a live
+            # share always has entries
+            return path is not None and path.is_dir() and any(path.iterdir())
+        except OSError:
+            return False
+
+    def check_health(self) -> list[str]:
+        """One watchdog pass. Marks newly dead mounts offline (lazy umount so
+        a later remount can succeed) and retries failed ones; returns the
+        names that just came back so the caller can rescan them."""
+        reconnected = []
+        for record in self.db.list_mounts():
+            name = record["name"]
+            if name in self.errors:
+                if self.retry(name):
+                    reconnected.append(name)
+            elif not self._alive(name):
+                self.errors[name] = "connection lost"
+                self.runner(["umount", "-l", str(self.base / name)],
+                            capture_output=True, text=True)
+        return reconnected
 
     def listing(self) -> list[dict]:
         out = []

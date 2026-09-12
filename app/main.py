@@ -17,7 +17,8 @@ from .depth import generate_depth_map
 from .indexer import ScanManager, walk_media
 from .media import MediaRoots, classify_media
 from .mounts import MountError, MountManager
-from .thumbs import MIME_OVERRIDES, make_preview, make_thumb, needs_conversion
+from .thumbs import (MIME_OVERRIDES, drop_cached, make_preview, make_thumb,
+                     needs_conversion, sweep_cache)
 
 
 class CollectionIn(BaseModel):
@@ -151,14 +152,28 @@ def create_app(mount_runner=None) -> FastAPI:
         for name in roots.roots:
             if name not in mounts.errors:
                 scanner.start(name)
-        def backup_loop():  # long-running containers still get dailies
+        def daily_maintenance():  # long-running containers still get dailies
             while True:
+                try:
+                    sweep_cache(cache)  # thumbs unused for 90d = orphans
+                except Exception:
+                    pass
                 time.sleep(24 * 3600)
                 try:
                     db.backup(data / "backups")
                 except Exception:
                     pass
-        threading.Thread(target=backup_loop, daemon=True).start()
+        threading.Thread(target=daily_maintenance, daemon=True).start()
+
+        def mount_watch():  # dead drives grey out; returning ones self-restore
+            while True:
+                time.sleep(60)
+                try:
+                    for name in mounts.check_health():
+                        scanner.start(name, quick=True)
+                except Exception:
+                    pass
+        threading.Thread(target=mount_watch, daemon=True).start()
 
     @app.get("/api/roots")
     def api_roots():
@@ -245,6 +260,10 @@ def create_app(mount_runner=None) -> FastAPI:
                 is_dir = target.is_dir()
                 if not is_dir and not target.is_file():
                     raise ValueError("file not found")
+                if not is_dir:
+                    # privacy: a deleted file's thumbnails go with it, now —
+                    # key needs the stat, so this must precede the move
+                    drop_cached(target, cache)
                 dest = batch_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 base, n = dest, 1
@@ -313,6 +332,10 @@ def create_app(mount_runner=None) -> FastAPI:
                 errors[rel] = str(exc)
         if removed:
             db.remove_files(payload.root, removed)
+            # durable hidden marks follow the file: drop at source, set at dest
+            gone_hidden = [r for r in removed if r in was_hidden]
+            if gone_hidden:
+                db.set_hidden(payload.root, gone_hidden, False)
         media_entries = [e for e in entries if e["media_type"]]
         if media_entries:
             db.upsert_files(payload.dest_root, media_entries)

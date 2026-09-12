@@ -131,3 +131,45 @@ def test_backup_snapshots_and_prunes(tmp_path):
     assert len(names) == 7
     assert names[0] == "refdeck-2026-09-03.db"  # oldest pruned as each backup ran
     assert names[-1] == "refdeck-2026-09-11.db"
+
+
+ENTRY_A = {"path": "a.jpg", "name": "a.jpg", "dir": "", "media_type": "image", "size": 1, "mtime": 1}
+ENTRY_B = {"path": "b.jpg", "name": "b.jpg", "dir": "", "media_type": "image", "size": 2, "mtime": 2}
+
+
+def test_hidden_marks_survive_index_wipe_and_rescan(tmp_path):
+    # Hidden choices are user data; the index is disposable. Losing every
+    # files row (the dead-mount wipe) must not lose what's hidden.
+    db = RefDeckDB(tmp_path / "t.db")
+    db.init([])
+    db.upsert_files("R", [ENTRY_A, ENTRY_B])
+    db.set_hidden("R", ["a.jpg"], True)
+    db.remove_missing("R", set())  # index wiped
+    db.upsert_files("R", [ENTRY_A, ENTRY_B])  # rescan rebuilds
+    flags = {f["path"]: f["hidden"] for f in db.query_files("R", include_hidden=True)["files"]}
+    assert flags == {"a.jpg": 1, "b.jpg": 0}
+
+
+def test_unhide_forgets_the_mark(tmp_path):
+    db = RefDeckDB(tmp_path / "t.db")
+    db.init([])
+    db.upsert_files("R", [ENTRY_A])
+    db.set_hidden("R", ["a.jpg"], True)
+    db.set_hidden("R", ["a.jpg"], False)
+    db.remove_missing("R", set())
+    db.upsert_files("R", [ENTRY_A])
+    assert db.query_files("R", include_hidden=True)["files"][0]["hidden"] == 0
+
+
+def test_legacy_hidden_flags_seed_marks_on_init(tmp_path):
+    # Pre-marks DBs only have files.hidden=1 rows; init() must seed the
+    # durable marks from them so existing hidden choices become permanent.
+    db = RefDeckDB(tmp_path / "t.db")
+    db.init([])
+    db.upsert_files("R", [ENTRY_A])
+    with db.connect() as con:  # legacy-style flag, no mark
+        con.execute("update files set hidden=1 where path='a.jpg'")
+    db.init([])  # next boot migrates
+    db.remove_missing("R", set())
+    db.upsert_files("R", [ENTRY_A])
+    assert db.query_files("R", include_hidden=True)["files"][0]["hidden"] == 1

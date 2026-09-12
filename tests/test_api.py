@@ -366,3 +366,17 @@ def test_move_collision_and_guards(tmp_path, monkeypatch):
     assert "escapes root" in bad["errors"]["../etc/passwd"]
     assert "already there" in bad["errors"]["sub/nested.png"]
     assert bad["moved"] == []
+
+
+def test_delete_removes_cached_thumbs(tmp_path, monkeypatch):
+    # Privacy rule: a permanently deleted file must not leave its thumbnail
+    # behind in the cache.
+    from app.thumbs import cache_key
+    client, media = make_client(tmp_path, monkeypatch)
+    assert client.get("/api/thumb", params={"root": "Media", "path": "top.jpg"}).status_code == 200
+    key = cache_key(media / "top.jpg")  # key needs the stat, so compute pre-delete
+    cache = tmp_path / "data" / "thumbs"
+    assert (cache / f"{key}.jpg").exists()
+    client.post("/api/files/delete", json={"root": "Media", "paths": ["top.jpg"]})
+    assert not (cache / f"{key}.jpg").exists()
+    assert not (cache / f"{key}_preview.jpg").exists()
