@@ -3,18 +3,18 @@ from app.db import RefDeckDB
 
 def test_db_bootstraps_roots_and_roundtrips_collections_and_boards(tmp_path):
     db = RefDeckDB(tmp_path / "refdeck.db")
-    db.init([("Shirahoshi", "/media/Shirahoshi")])
+    db.init([("Drive", "/media/Drive")])
 
     roots = db.roots()
-    assert roots == [{"id": 1, "name": "Shirahoshi", "path": "/media/Shirahoshi"}]
+    assert roots == [{"id": 1, "name": "Drive", "path": "/media/Drive"}]
 
     collection = db.create_collection("Kitchen")
-    db.add_collection_item(collection["id"], "/media/Shirahoshi/a.jpg", "image")
+    db.add_collection_item(collection["id"], "/media/Drive/a.jpg", "image")
     collections = db.collections()
     assert collections[0]["title"] == "Kitchen"
-    assert collections[0]["items"][0]["path"] == "/media/Shirahoshi/a.jpg"
+    assert collections[0]["items"][0]["path"] == "/media/Drive/a.jpg"
 
-    board_doc = {"items": [{"path": "/media/Shirahoshi/a.jpg", "x": 10, "y": 20}]}
+    board_doc = {"items": [{"path": "/media/Drive/a.jpg", "x": 10, "y": 20}]}
     board = db.save_board(None, "Moodboard", board_doc)
     loaded = db.board(board["id"])
     assert loaded["title"] == "Moodboard"
