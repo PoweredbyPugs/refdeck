@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import os
 import shutil
 import subprocess
@@ -7,11 +8,12 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .auth import COOKIE, SESSION_TTL, Auth
 from .db import RefDeckDB
 from .depth import generate_depth_map
 from .indexer import ScanManager, walk_media
@@ -112,6 +114,16 @@ def data_dir() -> Path:
     return Path(os.environ.get("REFDECK_DATA_DIR", str(Path.cwd() / "data")))
 
 
+def env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    return default if not raw else raw not in ("0", "false", "no", "off")
+
+
+# reachable without a session: the login page and what a home-screen icon needs
+PUBLIC_PATHS = {"/login", "/favicon.svg", "/favicon-32.png", "/apple-touch-icon.png"}
+UPLOAD_CHUNK = 1024 * 1024
+
+
 def create_app(mount_runner=None) -> FastAPI:
     app = FastAPI(title="RefDeck")
     roots = MediaRoots(parse_roots())
@@ -131,6 +143,76 @@ def create_app(mount_runner=None) -> FastAPI:
     app.state.cache = cache
     app.state.scanner = scanner
     app.state.mounts = mounts
+
+    # per-instance switches — defaults are the private LAN instance, unchanged
+    auth = Auth.from_env()
+    brand = os.environ.get("REFDECK_BRAND", "").strip()
+    allow_upload = env_flag("REFDECK_ALLOW_UPLOAD", False)
+    allow_delete = env_flag("REFDECK_ALLOW_DELETE", True)
+    allow_mounts = env_flag("REFDECK_ALLOW_MOUNTS", True)
+    upload_max = int(float(os.environ.get("REFDECK_UPLOAD_MAX_MB", "2048")) * 1024 * 1024)
+    app.state.auth = auth
+    static = Path(__file__).parent / "static"
+
+    def require(flag: bool, what: str) -> None:
+        if not flag:
+            raise HTTPException(status_code=403, detail=f"{what} is turned off on this RefDeck")
+
+    if auth:
+        @app.middleware("http")
+        async def require_login(request: Request, call_next):
+            if request.url.path in PUBLIC_PATHS or auth.valid(request.cookies.get(COOKIE)):
+                return await call_next(request)
+            if request.url.path.startswith("/api/"):
+                return JSONResponse({"detail": "login required"}, status_code=401)
+            return RedirectResponse("/login", status_code=303)
+
+    def client_key(request: Request) -> str:
+        # the last X-Forwarded-For hop is the one our own proxy appended
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[-1].strip()
+        return request.client.host if request.client else "?"
+
+    def login_page(error: str = "", status: int = 200) -> HTMLResponse:
+        page = (static / "login.html").read_text()
+        page = page.replace("{{brand}}", html.escape(brand or "RefDeck"))
+        page = page.replace("{{error}}", html.escape(error))
+        return HTMLResponse(page, status_code=status)
+
+    @app.get("/login")
+    def get_login(request: Request):
+        if not auth or auth.valid(request.cookies.get(COOKIE)):
+            return RedirectResponse("/", status_code=303)
+        return login_page()
+
+    @app.post("/login")
+    def post_login(request: Request, username: str = Form(""), password: str = Form("")):
+        if not auth:
+            return RedirectResponse("/", status_code=303)
+        client = client_key(request)
+        wait = auth.retry_after(client)
+        if wait:
+            response = login_page(f"Too many tries — wait {wait} seconds and try again.", 429)
+            response.headers["Retry-After"] = str(wait)
+            return response
+        if not auth.attempt(client, username, password):
+            return login_page("That username or password didn't match.", 401)
+        response = RedirectResponse("/", status_code=303)
+        response.set_cookie(COOKIE, auth.issue(), max_age=SESSION_TTL, httponly=True,
+                            secure=auth.secure_cookie, samesite="lax")
+        return response
+
+    @app.post("/logout")
+    def post_logout():
+        response = RedirectResponse("/login" if auth else "/", status_code=303)
+        response.delete_cookie(COOKIE)
+        return response
+
+    @app.get("/api/config")
+    def api_config():
+        return {"brand": brand, "auth": bool(auth), "upload": allow_upload,
+                "delete": allow_delete, "mounts": allow_mounts}
 
     @app.on_event("startup")
     def startup():
@@ -240,6 +322,7 @@ def create_app(mount_runner=None) -> FastAPI:
 
     @app.post("/api/files/delete")
     def api_delete_files(payload: DeleteIn):
+        require(allow_delete, "deleting")
         if payload.root not in roots.roots:
             raise HTTPException(status_code=400, detail=f"unknown root: {payload.root}")
         # files land in a timestamped trash batch (invisible to the indexer)
@@ -285,6 +368,7 @@ def create_app(mount_runner=None) -> FastAPI:
 
     @app.post("/api/files/move")
     def api_move_files(payload: MoveIn):
+        require(allow_delete, "moving files")
         for r in (payload.root, payload.dest_root):
             if r not in roots.roots:
                 raise HTTPException(status_code=400, detail=f"unknown root: {r}")
@@ -347,6 +431,7 @@ def create_app(mount_runner=None) -> FastAPI:
 
     @app.post("/api/files/restore")
     def api_restore_files(payload: RestoreIn):
+        require(allow_delete, "restoring")
         if payload.root not in roots.roots:
             raise HTTPException(status_code=400, detail=f"unknown root: {payload.root}")
         root_base = Path(roots.roots[payload.root])
@@ -394,6 +479,64 @@ def create_app(mount_runner=None) -> FastAPI:
                     shutil.rmtree(b, ignore_errors=True)
         return {"restored": restored, "errors": errors}
 
+    @app.post("/api/upload")
+    def api_upload(root: str, path: str = "", files: list[UploadFile] = File(...)):
+        require(allow_upload, "uploading")
+        try:
+            dest_dir = roots.resolve(root, path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not dest_dir.is_dir():
+            raise HTTPException(status_code=400, detail=f"not a folder: {path}")
+        base = roots.resolve(root)
+        uploaded: list[str] = []
+        errors: dict[str, str] = {}
+        entries: list[dict] = []
+        for upload in files:
+            name = Path(upload.filename or "").name.strip()
+            tmp = None
+            try:
+                if not name or name.startswith("."):
+                    raise ValueError("unusable file name")
+                if not classify_media(Path(name)):
+                    raise ValueError("only photos and videos can be uploaded")
+                dest = dest_dir / name
+                stem, n = dest, 1
+                while dest.exists():
+                    dest = stem.with_name(f"{stem.stem}-{n}{stem.suffix}")
+                    n += 1
+                # dot-prefixed while in flight: the indexer skips it, and a
+                # failed upload never leaves a half-file under the real name
+                tmp = dest.with_name(f".{dest.name}.uploading")
+                size = 0
+                with open(tmp, "xb") as out:
+                    while chunk := upload.file.read(UPLOAD_CHUNK):
+                        size += len(chunk)
+                        if size > upload_max:
+                            raise ValueError(f"larger than the {upload_max // (1024 * 1024)} MB limit")
+                        out.write(chunk)
+                os.replace(tmp, dest)
+                tmp = None
+                rel = dest.relative_to(base).as_posix()
+                stat = dest.stat()
+                entries.append({
+                    "path": rel,
+                    "name": dest.name,
+                    "dir": rel.rsplit("/", 1)[0] if "/" in rel else "",
+                    "media_type": classify_media(dest),
+                    "size": stat.st_size,
+                    "mtime": int(stat.st_mtime),
+                })
+                uploaded.append(rel)
+            except (ValueError, OSError) as exc:
+                errors[name or "(unnamed)"] = str(exc)
+            finally:
+                if tmp is not None:
+                    tmp.unlink(missing_ok=True)
+        if entries:
+            db.upsert_files(root, entries)  # visible now — no rescan needed
+        return {"uploaded": uploaded, "errors": errors}
+
     @app.get("/api/thumb")
     def api_thumb(root: str, path: str):
         return FileResponse(make_thumb(resolve_file(root, path), cache))
@@ -425,6 +568,7 @@ def create_app(mount_runner=None) -> FastAPI:
 
     @app.post("/api/mounts")
     def api_add_mount(payload: MountIn):
+        require(allow_mounts, "mounting shares")
         try:
             return mounts.add(payload.name.strip(), payload.server.strip(), payload.share.strip(),
                               payload.subpath.strip(), payload.username, payload.password)
@@ -435,6 +579,7 @@ def create_app(mount_runner=None) -> FastAPI:
 
     @app.delete("/api/mounts/{mount_id}")
     def api_remove_mount(mount_id: int):
+        require(allow_mounts, "mounting shares")
         try:
             mounts.remove(mount_id)
         except KeyError as exc:
@@ -503,7 +648,6 @@ def create_app(mount_runner=None) -> FastAPI:
         db.delete_board(board_id)
         return {"ok": True}
 
-    static = Path(__file__).parent / "static"
     app.mount("/", StaticFiles(directory=static, html=True), name="static")
     return app
 

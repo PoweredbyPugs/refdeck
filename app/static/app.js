@@ -1,4 +1,5 @@
 const state = {
+  config: { brand: '', auth: false, upload: false, delete: true, mounts: true },
   roots: [],
   root: null,
   path: '',
@@ -66,6 +67,7 @@ const previewUrl = item => `/api/preview?root=${encodeURIComponent(item.root || 
 
 async function api(path, opts) {
   const res = await fetch(path, opts)
+  if (res.status === 401 && state.config.auth) { location.href = '/login'; throw new Error('signed out') }
   if (!res.ok) {
     let detail
     try { detail = JSON.parse(await res.text()).detail } catch { /* raw text below */ }
@@ -75,6 +77,8 @@ async function api(path, opts) {
 }
 
 async function init() {
+  state.config = await api('/api/config')
+  applyConfig()
   await refreshRoots()
   $('tree').onclick = event => {
     const row = event.target.closest('.trow')
@@ -461,7 +465,7 @@ function handleKeys(event) {
     setMode('split'); clearSelection()
   }
   if (event.key === 'Delete' || event.key === 'Backspace') {
-    if (state.sel.size) { deleteGridSelection(); return }
+    if (state.sel.size) { if (state.config.delete) deleteGridSelection(); return }
     deleteSelectedBoardItem()
   }
   if (event.key === ']') { moveSelectedLayer(1) }
@@ -575,7 +579,7 @@ function openTreeCtx(event, root, path) {
   const rows = [['open', 'Open'], ['drill', 'Drill down here', 'D']]
   if (state.drill) rows.push(['flat', 'Open flat (this folder only)'])
   if (path === '') rows.push(['rescan', 'Rescan drive'])
-  else rows.push(['delete', 'Delete folder'])
+  else if (state.config.delete) rows.push(['delete', 'Delete folder'])
   const menu = $('tctx')
   menu.innerHTML = rows.map(([action, label, kbd]) =>
     `<button data-t="${action}">${label}${kbd ? `<kbd>${kbd}</kbd>` : ''}</button>`).join('')
@@ -689,7 +693,7 @@ function openCtxMenu(event, item) {
   state.contextItem = item
   const menu = $('ctxMenu')
   menu.querySelector('[data-ctx="uncollect"]').style.display = item.collectionItemId ? '' : 'none'
-  menu.querySelector('[data-ctx="delete"]').style.display = item.collectionItemId ? 'none' : ''
+  menu.querySelector('[data-ctx="delete"]').style.display = item.collectionItemId || !state.config.delete ? 'none' : ''
   menu.querySelector('[data-ctx="depth"]').style.display = item.media_type === 'image' ? '' : 'none'
   menu.hidden = false
   menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8) + 'px'
@@ -1520,7 +1524,7 @@ async function openSettings() {
 }
 
 async function renderSettings() {
-  const [rootList, mountList] = await Promise.all([api('/api/roots'), api('/api/mounts')])
+  const [rootList, mountList] = await Promise.all([api('/api/roots'), state.config.mounts ? api('/api/mounts') : []])
   state.roots = rootList
   $('rootList').innerHTML = rootList.map(r => `
     <div class="settingsRow">
@@ -1544,6 +1548,93 @@ async function renderSettings() {
     await renderSettings()
     await refreshRoots()
   })
+}
+
+// per-instance switches from the server: brand, login, upload, delete, mounts
+function applyConfig() {
+  const { brand, auth, upload, mounts } = state.config
+  if (brand) {
+    document.title = `${brand} · RefDeck`
+    $('wordmark').innerHTML = `${h(brand.toUpperCase())}<i>/</i>DECK`
+  }
+  $('mountSection').hidden = !mounts
+  $('logoutBtn').hidden = !auth
+  $('logoutBtn').onclick = logout
+  $('uploadBtn').hidden = !upload
+  if (!upload) return
+  $('uploadBtn').onclick = () => $('uploadInput').click()
+  $('uploadInput').onchange = () => {
+    const files = [...$('uploadInput').files]
+    $('uploadInput').value = ''  // picking the same file again must still fire
+    uploadFiles(files)
+  }
+  // only drags from the desktop carry Files — tile drags to boards don't
+  const zone = $('gridScroll')
+  const fromDesktop = event => [...(event.dataTransfer?.types || [])].includes('Files')
+  zone.addEventListener('dragover', event => {
+    if (!fromDesktop(event)) return
+    event.preventDefault()
+    zone.classList.add('dropTarget')
+  })
+  zone.addEventListener('dragleave', event => { if (!zone.contains(event.relatedTarget)) zone.classList.remove('dropTarget') })
+  zone.addEventListener('drop', event => {
+    if (!fromDesktop(event)) return
+    event.preventDefault()
+    zone.classList.remove('dropTarget')
+    uploadFiles([...event.dataTransfer.files])
+  })
+}
+
+async function logout() {
+  await fetch('/logout', { method: 'POST' }).catch(() => {})
+  location.href = '/login'
+}
+
+// one request per file: honest progress, and one bad file can't sink the rest
+function uploadOne(file, index, total) {
+  return new Promise(resolve => {
+    const form = new FormData()
+    form.append('files', file, file.name)
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `/api/upload?root=${encodeURIComponent(state.root)}&path=${encodeURIComponent(state.path)}`)
+    xhr.upload.onprogress = event => {
+      if (!event.lengthComputable) return
+      const pct = Math.round(event.loaded / event.total * 100)
+      $('status').textContent = `uploading ${index + 1}/${total} — ${file.name} ${pct}%`
+    }
+    xhr.onload = () => {
+      if (xhr.status === 401 && state.config.auth) { location.href = '/login'; return }
+      let body = {}
+      try { body = JSON.parse(xhr.responseText) } catch { /* reported below */ }
+      if (xhr.status >= 400) resolve({ uploaded: [], errors: { [file.name]: body.detail || `${xhr.status} ${xhr.statusText}` } })
+      else resolve(body)
+    }
+    xhr.onerror = () => resolve({ uploaded: [], errors: { [file.name]: 'connection lost' } })
+    xhr.send(form)
+  })
+}
+
+async function uploadFiles(files) {
+  if (!files.length) return
+  if (!state.root || state.collectionId) {
+    alert('Open a folder first — uploads land in the folder you are looking at.')
+    return
+  }
+  $('uploadBtn').disabled = true
+  let uploaded = 0
+  const errors = []
+  for (const [i, file] of files.entries()) {
+    const res = await uploadOne(file, i, files.length)
+    uploaded += res.uploaded?.length || 0
+    errors.push(...Object.entries(res.errors || {}).map(([name, msg]) => `${name}: ${msg}`))
+  }
+  $('uploadBtn').disabled = false
+  await refreshRoots()
+  await resetGrid()
+  $('status').textContent = errors.length
+    ? `uploaded ${uploaded} — ${errors.length} failed`
+    : `uploaded ${uploaded} file${uploaded === 1 ? '' : 's'}`
+  if (errors.length) alert(`Some files didn't upload:\n\n${errors.join('\n')}`)
 }
 
 let scanTimer
@@ -2153,7 +2244,7 @@ function clamp(value, min, max) { return Math.max(min, Math.min(max, value)) }
 function buildCommands() {
   const c = []
   const add = (name, run, kbd) => c.push({ name, run, kbd })
-  if (state.sel.size) {
+  if (state.sel.size && state.config.delete) {
     const n = state.sel.size
     add(`Move ${n} selected file${n === 1 ? '' : 's'} to folder…`, moveGridSelection)
   }
@@ -2183,6 +2274,8 @@ function buildCommands() {
   add('Board: delete selection', deleteSelectedBoardItem, '⌫')
   add('New collection', newCollection)
   add('Open settings', openSettings)
+  if (state.config.upload) add('Upload photos into this folder…', () => $('uploadInput').click())
+  if (state.config.auth) add('Log out', logout)
   for (const r of state.roots) {
     add(`Go to drive: ${r.name}`, () => selectFolder(r.name, ''))
     add(`Rescan drive: ${r.name}`, () => api(`/api/scan/${encodeURIComponent(r.name)}`, { method: 'POST' }).then(pollScan))

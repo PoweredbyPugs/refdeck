@@ -7,7 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="stylesheet" href="/style.css?v=37" />
+  <link rel="stylesheet" href="/style.css?v=38" />
   <link rel="stylesheet" href="/vendor/psv-core.css" />
   <script type="importmap">{ "imports": { "three": "/vendor/three.module.js" } }</script>
 </head>
@@ -25,6 +25,8 @@
         <button id="modeCanvas" title="Canvas only (C)">Canvas</button>
       </div>
       <span class="vr"></span>
+      <button id="uploadBtn" title="Upload photos into the open folder" hidden>↑ Upload</button>
+      <input id="uploadInput" type="file" multiple accept="image/*,video/*,.heic,.heif,.psd,.tif,.tiff,.insp,.mts,.m2ts,.mkv" hidden />
       <button id="newCollection" class="ghost">+ Collection</button>
       <button id="newBoard" class="ghost">+ Board</button>
       <button id="saveBoard" class="ghost" title="Save board (⌘S)">Save</button>
@@ -124,8 +126,10 @@
   </div>
   <dialog id="settings">
     <button id="closeSettings">Close</button>
+    <button id="logoutBtn" hidden>Log out</button>
     <h3>Roots</h3>
     <div id="rootList"></div>
+    <div id="mountSection">
     <h3>SMB mounts</h3>
     <div id="mountList"></div>
     <form id="mountForm">
@@ -139,6 +143,7 @@
       <div class="hint">Credentials are stored in RefDeck's local data folder on this machine.</div>
       <div id="mountError" class="hint"></div>
     </form>
+    </div>
     <h3>Keyboard</h3>
     <div class="hotkeys">
       <div class="hkGroup">Anywhere</div>
@@ -214,6 +219,6 @@
       <button data-pv="close">Close <kbd>Esc</kbd></button>
     </div>
   </dialog>
-  <script src="/app.js?v=37"></script>
+  <script src="/app.js?v=38"></script>
 </body>
 </html>

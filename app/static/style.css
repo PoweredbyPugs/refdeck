@@ -28,6 +28,10 @@ input::placeholder { color: var(--ink3); }
 .ghost.icon { padding: 6px 8px; font-size: 13px; }
 .ghost.active, #toggleSidebar.active, #zenToggle.active { color: var(--acc); }
 #reloadChanges.active { animation: spin 1.2s linear infinite; }
+#uploadBtn { background: transparent; border-color: var(--acc); color: var(--acc); }
+#uploadBtn:hover { background: var(--bg2); }
+#gridScroll.dropTarget { outline: 2px dashed var(--acc); outline-offset: -4px; border-radius: 8px; }
+#logoutBtn { margin-left: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }

@@ -94,6 +94,14 @@ Environment variables:
 | `REFDECK_ROOTS` | *(none — required)* | `Name=path` pairs, `;`-separated |
 | `REFDECK_DATA_DIR` | `./data` | SQLite DB + thumbnail cache |
 | `REFDECK_MOUNT_BASE` | `/mnt/refdeck` | where SMB shares mount |
+| `REFDECK_AUTH_USER` / `REFDECK_AUTH_HASH` | *(off)* | turn on the login page — hash from `python -m app.auth` |
+| `REFDECK_SECRET` | *(random per start)* | signs session cookies; set it so logins survive restarts |
+| `REFDECK_COOKIE_SECURE` | `1` | `0` only for plain-HTTP testing |
+| `REFDECK_BRAND` | *(none)* | name shown on the login page and wordmark |
+| `REFDECK_ALLOW_UPLOAD` | `0` | upload button + drag-in from the desktop |
+| `REFDECK_UPLOAD_MAX_MB` | `2048` | per-file upload cap |
+| `REFDECK_ALLOW_DELETE` | `1` | delete / move / restore |
+| `REFDECK_ALLOW_MOUNTS` | `1` | in-app SMB mounting |
 
 First start triggers a full index scan with background thumbnail
 pre-generation (it pauses below 2 GB free disk and resumes on demand).
@@ -124,7 +132,9 @@ Layout: `app/media.py` (roots + traversal safety) · `app/indexer.py` (scanner)
 
 ## Notes
 
-- LAN tool, no auth — don't expose port 8787 to the internet.
+- LAN tool by default, no auth. Before exposing it anywhere else, set
+  `REFDECK_AUTH_USER`/`REFDECK_AUTH_HASH`/`REFDECK_SECRET` and serve it over
+  HTTPS only (the session cookie is `Secure`). Logins back off after 5 misses.
 - SMB credentials are stored plaintext in `data/refdeck.db`; `data/` is
   gitignored for exactly that reason.
 - Media classification is an explicit extension whitelist (a `mimetypes`
