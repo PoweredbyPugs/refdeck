@@ -224,3 +224,70 @@ def test_login_page_gets_theme(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch, **auth_env(REFDECK_THEME="light"))
     assert 'data-default-theme="light"' in client.get("/login").text
     assert client.get("/", follow_redirects=False).status_code == 303  # index still behind login
+
+
+# ---------- profile photo ----------
+
+def jpeg_with_exif(size=(900, 600)) -> bytes:
+    img = Image.new("RGB", size, (40, 160, 120))
+    exif = Image.Exif()
+    exif[0x010F] = "SecretCam"      # Make
+    exif[0x8825] = {2: (28.0, 32.0, 0.0)}  # GPS latitude
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", exif=exif)
+    return buf.getvalue()
+
+
+def test_profile_starts_empty(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    assert client.get("/api/profile").json() == {"avatar": None}
+    assert client.get("/api/profile/avatar").status_code == 404
+
+
+def test_profile_upload_is_square_512_and_scrubbed(tmp_path, monkeypatch):
+    client, media = make_client(tmp_path, monkeypatch)
+    res = client.post("/api/profile/avatar", files={"file": ("me.jpg", jpeg_with_exif(), "image/jpeg")})
+    assert res.status_code == 200
+    url = res.json()["avatar"]
+    assert url.startswith("/api/profile/avatar?v=")
+    got = client.get(url)
+    assert got.headers["content-type"] == "image/jpeg"
+    assert "immutable" in got.headers["cache-control"]
+    img = Image.open(io.BytesIO(got.content))
+    assert img.size == (512, 512)
+    assert not img.getexif()  # no camera, no GPS
+    assert not list(media.rglob("*avatar*"))  # never lands in the media folder
+    assert client.get("/api/profile").json()["avatar"] == url
+
+
+def test_profile_rejects_non_images_and_leaves_old_photo(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    first = client.post("/api/profile/avatar", files={"file": ("a.png", png_bytes(), "image/png")}).json()["avatar"]
+    bad = client.post("/api/profile/avatar", files={"file": ("x.jpg", b"not an image", "image/jpeg")})
+    assert bad.status_code == 400
+    assert client.get("/api/profile").json()["avatar"] == first
+    assert not list((tmp_path / "data" / "profile").glob(".*"))
+
+
+def test_profile_size_cap(tmp_path, monkeypatch):
+    import app.main as main_mod
+    monkeypatch.setattr(main_mod, "AVATAR_MAX_BYTES", 100)
+    client, _ = make_client(tmp_path, monkeypatch)
+    res = client.post("/api/profile/avatar", files={"file": ("big.jpg", jpeg_with_exif(), "image/jpeg")})
+    assert res.status_code == 413
+    assert client.get("/api/profile").json() == {"avatar": None}
+
+
+def test_profile_remove(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    client.post("/api/profile/avatar", files={"file": ("a.png", png_bytes(), "image/png")})
+    assert client.delete("/api/profile/avatar").json() == {"avatar": None}
+    assert client.get("/api/profile/avatar").status_code == 404
+
+
+def test_profile_needs_login(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch, **auth_env())
+    assert client.get("/api/profile").status_code == 401
+    assert client.post("/api/profile/avatar", files={"file": ("a.png", png_bytes(), "image/png")}).status_code == 401
+    login(client)
+    assert client.post("/api/profile/avatar", files={"file": ("a.png", png_bytes(), "image/png")}).status_code == 200

@@ -319,7 +319,7 @@ body.zen #browser { padding-top: 14px; }
 /* ---------- phone layout (≤700px) — the design prototype ---------- */
 #menuBtn, #cardShield, #drawer, #pvChrome { display: none; }
 #iconSprite { display: none; }
-#drawer svg, #menuBtn svg, #pvChrome svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+#drawer svg, #menuBtn svg, #pvChrome svg, #profileSheet svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
 
 #toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 90; max-width: min(92vw, 420px); padding: 10px 14px; border-radius: 10px; background: var(--bg2); color: var(--ink); border: 1px solid var(--line); font-size: 13px; line-height: 1.35; box-shadow: 0 12px 32px rgba(0,0,0,.35); opacity: 0; pointer-events: none; transform: translate(-50%, 16px); transition: opacity .2s ease, transform .2s ease; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
@@ -381,6 +381,58 @@ body.touch #preview { background: rgba(5, 6, 8, var(--pv-bg, 1)); }
 body.touch #preview::backdrop { background: transparent; }  /* swipe-down fades the dialog itself, revealing the gallery */
 #previewBody.pvSnap { transition: transform .24s cubic-bezier(.2, .8, .2, 1), opacity .24s ease; }
 
+/* menu avatar with a saved photo: the photo is the whole chip */
+#drawer .dChip.hasPhoto::before { display: none; }
+#drawer .dChip.hasPhoto img { position: relative; width: 50px; height: 50px; border-radius: 50%; object-fit: cover; display: block; }
+
+/* ---------- profile photo sheet: home → pick → crop ---------- */
+#profileSheet { position: fixed; inset: 0; z-index: 70; pointer-events: none; font: 16px/1.3 Inter, var(--sans); }
+#profileSheet.open { pointer-events: auto; }
+.psScrim { position: absolute; inset: 0; background: rgba(0,0,0,.35); opacity: 0; transition: opacity .3s ease; }
+#profileSheet.open .psScrim { opacity: 1; }
+.psPanel { position: absolute; left: 0; right: 0; bottom: 0; top: max(24px, env(safe-area-inset-top)); display: flex; flex-direction: column; margin: 0 auto; max-width: 430px; overflow: hidden; border-radius: 24px 24px 0 0; background: var(--drawer-bg); color: var(--drawer-ink); box-shadow: 0 -12px 40px rgba(0,0,0,.25); transform: translateY(105%); transition: transform var(--spring-ms) var(--spring); }
+#profileSheet.open .psPanel { transform: none; }
+body:not(.phone) .psPanel { top: 5vh; bottom: 5vh; border-radius: 24px; }
+.psHead { position: relative; flex: none; display: flex; align-items: center; justify-content: center; height: 96px; }
+.psHead h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0; }
+.psBack { position: absolute; left: 16px; top: 26px; width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border: 0; background: none; color: var(--drawer-ink); transition: opacity .2s; }
+.psBack svg { width: 27px; height: 27px; stroke-width: 1.7778; }
+#profileSheet[data-step="home"] .psBack { opacity: 0; pointer-events: none; }
+#profileSheet .psClose { position: absolute; right: 18px; top: 18px; width: 60px; height: 60px; padding: 0; border: 0; background: none; color: var(--drawer-chip-ink); display: grid; place-items: center; }
+#profileSheet .psClose::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; background: var(--drawer-chip); }
+#profileSheet .psClose svg { position: relative; width: 60px; height: 60px; stroke-width: .8; }
+.psViewport { flex: 1; min-height: 0; overflow: hidden; }
+.psTrack { display: flex; width: 300%; height: 100%; transition: transform .28s cubic-bezier(.2, .8, .2, 1); }
+#profileSheet[data-step="pick"] .psTrack { transform: translateX(-33.3333%); }
+#profileSheet[data-step="crop"] .psTrack { transform: translateX(-66.6667%); }
+.psStep { width: 33.3333%; height: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 8px 24px calc(24px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; }
+#psHome { align-items: center; gap: 36px; padding-top: 24px; }
+.psAvatar { position: relative; width: 160px; height: 160px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; background: var(--drawer-chip); color: var(--drawer-chip-ink); flex: none; }
+.psAvatar svg { width: 96px; height: 96px; stroke-width: 1.25; }
+.psAvatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.psActions { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 300px; }
+.psRow { display: flex; align-items: center; justify-content: center; gap: 12px; height: 48px; padding: 0 18px; border: 0; border-radius: 6px; background: none; color: var(--drawer-ink); font: inherit; cursor: pointer; box-shadow: inset 0 0 0 1.5px var(--drawer-ink); }
+.psRow svg { width: 24px; height: 24px; stroke-width: 1.75; flex: none; }
+.psRow[hidden] { display: none; }
+.psRow.primary { background: var(--drawer-pill); color: var(--drawer-pill-ink); box-shadow: none; font-weight: 600; }
+.psRow:disabled { opacity: .5; cursor: default; }
+.psRow:focus-visible, .psChip:focus-visible, .psThumb:focus-visible { outline: 2px solid var(--drawer-ink); outline-offset: 2px; }
+.psChips { display: flex; gap: 8px; flex: none; overflow-x: auto; padding: 2px 2px 12px; margin: 0 -2px; scrollbar-width: none; }
+.psChips::-webkit-scrollbar { display: none; }
+.psChip { flex: none; height: 34px; padding: 0 14px; border: 0; border-radius: 17px; background: none; color: var(--drawer-ink); font: 14px Inter, var(--sans); box-shadow: inset 0 0 0 1.5px var(--drawer-ink); white-space: nowrap; }
+.psChip.active { background: var(--drawer-pill); color: var(--drawer-pill-ink); box-shadow: none; }
+.psGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; align-content: start; }
+.psThumb { position: relative; aspect-ratio: 1; padding: 0; border: 0; border-radius: 6px; overflow: hidden; background: var(--drawer-chip); cursor: pointer; }
+.psThumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.psEmpty { grid-column: 1 / -1; padding: 32px 8px; text-align: center; font-size: 14px; opacity: .7; }
+#psCrop { align-items: center; gap: 14px; }
+.psCropArea { position: relative; flex: none; width: min(320px, 82vw); aspect-ratio: 1; border-radius: 16px; overflow: hidden; background: #000; touch-action: none; cursor: grab; }
+.psCropArea img { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; user-select: none; -webkit-user-drag: none; }
+.psRing { position: absolute; left: 6.25%; top: 6.25%; width: 87.5%; height: 87.5%; border-radius: 50%; box-shadow: 0 0 0 100vmax rgba(0,0,0,.55); outline: 2px solid rgba(255,255,255,.9); pointer-events: none; }
+.psHint { margin: 0; font-size: 13px; opacity: .75; text-align: center; }
+#psZoom { width: min(280px, 72vw); accent-color: var(--drawer-pill); background: none; border: 0; padding: 0; }
+.psButtons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: min(320px, 82vw); margin-top: 4px; }
+
 @media (prefers-reduced-motion: reduce) {
-  body.phone main, #drawer .dRow, #drawer .dChip { transition-duration: 1ms; }
+  body.phone main, #drawer .dRow, #drawer .dChip, .psPanel, .psTrack { transition-duration: 1ms; }
 }

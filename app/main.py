@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from .auth import COOKIE, SESSION_TTL, Auth
@@ -124,6 +125,8 @@ THEMES = ("light", "dark", "auto")
 # reachable without a session: the login page and what a home-screen icon needs
 PUBLIC_PATHS = {"/login", "/favicon.svg", "/favicon-32.png", "/apple-touch-icon.png"}
 UPLOAD_CHUNK = 1024 * 1024
+AVATAR_SIZE = 512
+AVATAR_MAX_BYTES = 10 * 1024 * 1024
 
 
 def create_app(mount_runner=None) -> FastAPI:
@@ -549,6 +552,62 @@ def create_app(mount_runner=None) -> FastAPI:
         if entries:
             db.upsert_files(root, entries)  # visible now — no rescan needed
         return {"uploaded": uploaded, "errors": errors}
+
+    # ---------- profile photo: one per instance, kept in data/, never in a media root ----------
+    profile_dir = data / "profile"
+    avatar_path = profile_dir / "avatar.jpg"
+
+    def avatar_info() -> dict:
+        if not avatar_path.is_file():
+            return {"avatar": None}
+        return {"avatar": f"/api/profile/avatar?v={avatar_path.stat().st_mtime_ns}"}
+
+    @app.get("/api/profile")
+    def api_profile():
+        return avatar_info()
+
+    @app.get("/api/profile/avatar")
+    def api_profile_avatar():
+        if not avatar_path.is_file():
+            raise HTTPException(status_code=404, detail="no profile photo")
+        # the URL carries the version, so the browser may keep it forever
+        return FileResponse(avatar_path, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+    @app.post("/api/profile/avatar")
+    def api_set_avatar(file: UploadFile = File(...)):
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        raw = profile_dir / ".incoming"
+        out = profile_dir / ".avatar.jpg.tmp"
+        try:
+            size = 0
+            with open(raw, "wb") as dest:
+                while chunk := file.file.read(UPLOAD_CHUNK):
+                    size += len(chunk)
+                    if size > AVATAR_MAX_BYTES:
+                        raise HTTPException(status_code=413, detail="profile photos must be under 10 MB")
+                    dest.write(chunk)
+            # re-encode from scratch: strips EXIF/GPS and anything odd riding in the file
+            try:
+                with Image.open(raw) as img:
+                    img = ImageOps.exif_transpose(img).convert("RGB")
+                    side = min(img.size)
+                    left, top = (img.width - side) // 2, (img.height - side) // 2
+                    img = img.crop((left, top, left + side, top + side))
+                    img = img.resize((AVATAR_SIZE, AVATAR_SIZE), Image.LANCZOS)
+                    img.save(out, "JPEG", quality=88, optimize=True)
+            except (OSError, ValueError, Image.DecompressionBombError) as exc:
+                raise HTTPException(status_code=400, detail="that file isn't a photo refDeck can read") from exc
+            os.replace(out, avatar_path)
+        finally:
+            raw.unlink(missing_ok=True)
+            out.unlink(missing_ok=True)
+        return avatar_info()
+
+    @app.delete("/api/profile/avatar")
+    def api_remove_avatar():
+        avatar_path.unlink(missing_ok=True)
+        return avatar_info()
 
     @app.get("/api/thumb")
     def api_thumb(root: str, path: str):

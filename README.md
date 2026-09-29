@@ -70,6 +70,10 @@ Mac mini (or anything else), serves any browser on your network.
   long-press for the action menu. The back button closes the preview or menu.
 - Boards open full-screen on phones for viewing: one finger pans, pinch zooms.
 - **Light / dark / auto theme**: Settings, the palette, or the phone menu.
+- **Profile photo**: tap the menu avatar (or Settings → Profile photo…) to
+  upload one or pick from collections / all photos, frame it in a circular
+  crop, save. Stored re-encoded (512px JPEG, no EXIF/GPS) in `data/profile/`,
+  never in a media root.
 
 ### Storage & mounts
 - Media roots are mounted **read-only**; RefDeck stores paths and a thumbnail

@@ -44,6 +44,9 @@ const state = {
   collections: [],
   boards: [],
   drawerRows: [],
+  profile: { avatar: null },
+  psTab: null,
+  psItems: [],
   collectionId: null,
   pickItem: null,
   currentBoard: { id: null, title: 'Untitled board', document: { items: [], viewport: { x: 0, y: 0, scale: 1 } } },
@@ -84,6 +87,7 @@ async function init() {
   applyTheme()
   document.querySelectorAll('[data-theme-pick]').forEach(b => b.onclick = () => setTheme(b.dataset.themePick))
   setupPhone()
+  setupProfile()
   await refreshRoots()
   $('tree').onclick = event => {
     const row = event.target.closest('.trow')
@@ -440,6 +444,7 @@ async function init() {
 }
 
 function handleKeys(event) {
+  if (event.key === 'Escape' && profileOpen()) { closeProfile(); return }
   if (event.key === 'Escape' && document.body.classList.contains('drawer-open')) { closeDrawer(); return }
   if (event.target.closest('input, textarea, select, dialog')) return
   const key = event.key.toLowerCase()
@@ -2462,7 +2467,7 @@ function renderDrawer() {
   }).join('')
   $('drawerList').innerHTML = rows(top)
   $('drawerBottom').innerHTML = rows(bottom)
-  $('drawerAvatar').title = state.config.brand || ''
+  renderAvatarChip()
 }
 
 function openDrawer() {
@@ -2509,6 +2514,7 @@ function popLayer(name) {
 window.addEventListener('popstate', () => {
   if (popGuard) { popGuard = false; return }
   if ($('preview').open) $('preview').close()
+  else if (profileOpen()) closeProfile()
   else closeDrawer()
 })
 
@@ -2518,7 +2524,7 @@ function setupToast() {
   new MutationObserver(() => {
     if (!isPhone()) return
     const text = $('status').textContent
-    if (!/^(upload|deleted|moved)|fail|error/i.test(text)) return
+    if (!/^(upload|deleted|moved|profile)|fail|error|couldn/i.test(text)) return
     $('toast').textContent = text
     $('toast').classList.add('show')
     clearTimeout(timer)
@@ -2732,6 +2738,281 @@ function setupBoardTouch() {
   }
   viewport.addEventListener('pointerup', release, true)
   viewport.addEventListener('pointercancel', release, true)
+}
+
+// ---------- profile photo: menu avatar → upload or pick → crop → save ----------
+
+const ps = { nw: 0, nh: 0, z: 1, ox: 0, oy: 0, s: 1, tx: 0, ty: 0, D: 0, area: 0, objectUrl: null, file: null, from: 'home' }
+let psAll = { offset: 0, total: Infinity, loading: false }
+
+function setupProfile() {
+  $('drawerAvatar').onclick = openProfile
+  $('openProfile').onclick = openProfile
+  $('psClose').onclick = closeProfile
+  $('psScrim').onclick = closeProfile
+  $('psBack').onclick = psBack
+  $('psUpload').onclick = () => $('psFile').click()
+  $('psChoose').onclick = psOpenPick
+  $('psRemove').onclick = psRemove
+  $('psCropCancel').onclick = () => psGo(ps.from)
+  $('psSave').onclick = psSave
+  $('psFile').onchange = () => {
+    const file = $('psFile').files[0]
+    $('psFile').value = ''  // choosing the same file again must still fire
+    if (file) psStartCrop(URL.createObjectURL(file), 'home', file)
+  }
+  $('psChips').onclick = event => {
+    const chip = event.target.closest('[data-ps-tab]')
+    if (!chip) return
+    state.psTab = chip.dataset.psTab
+    document.querySelectorAll('.psChip').forEach(c => c.classList.toggle('active', c === chip))
+    psLoadGrid(true)
+  }
+  $('psGrid').onclick = event => {
+    const thumb = event.target.closest('[data-ps-item]')
+    const item = thumb && state.psItems[+thumb.dataset.psItem]
+    if (item) psStartCrop(previewUrl(item), 'pick')
+  }
+  $('psPick').addEventListener('scroll', () => {
+    const el = $('psPick')
+    if (state.psTab === 'all' && el.scrollTop + el.clientHeight > el.scrollHeight - 300) psLoadGrid(false)
+  }, { passive: true })
+  $('psZoom').oninput = () => { ps.z = +$('psZoom').value; psApply() }
+  setupCropGestures()
+  loadProfile()
+}
+
+async function loadProfile() {
+  try { state.profile = await api('/api/profile') } catch { state.profile = { avatar: null } }
+  renderAvatarChip()
+}
+
+function renderAvatarChip() {
+  const url = state.profile?.avatar
+  const chip = $('drawerAvatar')
+  chip.classList.toggle('hasPhoto', !!url)
+  chip.innerHTML = url ? `<img src="${h(url)}" alt="" />` : '<svg><use href="#i-circle-user-round"/></svg>'
+}
+
+const profileOpen = () => $('profileSheet').classList.contains('open')
+
+function openProfile() {
+  if (profileOpen()) return
+  if ($('settings').open) $('settings').close()
+  psRenderHome()
+  psGo('home')
+  const sheet = $('profileSheet')
+  sheet.inert = false
+  void sheet.offsetWidth  // start from off-screen so the spring runs
+  sheet.classList.add('open')
+  pushLayer('profile')
+}
+
+function closeProfile() {
+  if (!profileOpen()) return
+  $('profileSheet').classList.remove('open')
+  $('profileSheet').inert = true
+  psReleaseSource()
+  popLayer('profile')
+}
+
+function psGo(step) {
+  $('profileSheet').dataset.step = step
+  $('psTitle').textContent = { home: 'Profile photo', pick: 'Choose a photo', crop: 'Frame your photo' }[step]
+}
+
+function psBack() {
+  const step = $('profileSheet').dataset.step
+  if (step === 'crop') psGo(ps.from)
+  else if (step === 'pick') psGo('home')
+}
+
+function psRenderHome() {
+  const url = state.profile?.avatar
+  $('psAvatar').innerHTML = url ? `<img src="${h(url)}" alt="Your profile photo" />` : '<svg><use href="#i-circle-user-round"/></svg>'
+  $('psRemove').hidden = !url
+}
+
+async function psRemove() {
+  if (!confirm('Remove your profile photo?')) return
+  try {
+    state.profile = await api('/api/profile/avatar', { method: 'DELETE' })
+  } catch (err) { alert(`Couldn't remove it: ${err.message}`); return }
+  renderAvatarChip()
+  psRenderHome()
+  $('status').textContent = 'profile photo removed'
+}
+
+// picker: each collection as a tab, plus every image in the library
+function psOpenPick() {
+  const tabs = [...state.collections.map(c => ({ key: `c${c.id}`, label: c.title })), { key: 'all', label: 'All photos' }]
+  if (!tabs.some(t => t.key === state.psTab)) state.psTab = tabs[0].key
+  $('psChips').innerHTML = tabs.map(t =>
+    `<button class="psChip ${t.key === state.psTab ? 'active' : ''}" data-ps-tab="${h(t.key)}">${h(t.label)}</button>`).join('')
+  psGo('pick')
+  psLoadGrid(true)
+}
+
+async function psLoadGrid(reset) {
+  const grid = $('psGrid')
+  if (reset) {
+    grid.innerHTML = ''
+    $('psPick').scrollTop = 0
+    psAll = { offset: 0, total: Infinity, loading: false }
+    state.psItems = []
+  }
+  let items = []
+  if (state.psTab === 'all') {
+    if (psAll.loading || psAll.offset >= psAll.total || !state.root) return
+    psAll.loading = true
+    const tab = state.psTab
+    try {
+      const params = new URLSearchParams({ root: state.root, path: '', recursive: '1', type: 'image',
+                                           sort: 'date', limit: '60', offset: String(psAll.offset) })
+      const res = await api(`/api/files?${params}`)
+      if (state.psTab !== tab) return  // switched tabs while loading
+      psAll.total = res.total
+      psAll.offset += res.files.length
+      items = res.files.map(f => ({ root: f.root || state.root, path: f.path }))
+    } catch (err) {
+      $('status').textContent = `couldn't load photos: ${err.message}`
+    } finally { psAll.loading = false }
+  } else if (reset) {
+    const col = state.collections.find(c => `c${c.id}` === state.psTab)
+    items = (col?.items || []).filter(it => it.media_type === 'image').map(it => {
+      const slash = it.path.indexOf('/')  // collection paths are "Root/relative/path"
+      return { root: it.path.slice(0, slash), path: it.path.slice(slash + 1) }
+    })
+  }
+  const start = state.psItems.length
+  state.psItems.push(...items)
+  grid.insertAdjacentHTML('beforeend', items.map((it, k) =>
+    `<button class="psThumb" data-ps-item="${start + k}" aria-label="${h(it.path.split('/').pop())}"><img src="${thumbUrl(it)}" alt="" loading="lazy" /></button>`).join(''))
+  if (!state.psItems.length) {
+    grid.innerHTML = `<div class="psEmpty">${state.psTab === 'all' ? 'No photos yet — upload some first.' : 'No photos in this collection yet.'}</div>`
+  }
+}
+
+// crop: the photo always covers the circle; drag to move, pinch / wheel / slider to zoom
+function psStartCrop(src, from, file = null) {
+  psReleaseSource()
+  ps.from = from
+  ps.file = file
+  if (file) ps.objectUrl = src
+  const img = $('psCropImg')
+  $('psSave').disabled = true
+  img.onload = () => {
+    ps.nw = img.naturalWidth
+    ps.nh = img.naturalHeight
+    ps.z = 1; ps.ox = 0; ps.oy = 0
+    $('psZoom').value = 1
+    psApply()
+    $('psSave').disabled = false
+  }
+  img.onerror = () => {
+    // e.g. HEIC on a desktop browser: it can't be drawn here, so the server squares it
+    if (ps.file) { psSaveBlob(ps.file); return }
+    alert("That photo couldn't be opened.")
+    psGo(from)
+  }
+  img.src = src
+  psGo('crop')
+}
+
+function psReleaseSource() {
+  if (ps.objectUrl) URL.revokeObjectURL(ps.objectUrl)
+  ps.objectUrl = null
+  ps.file = null
+}
+
+function psApply() {
+  if (!ps.nw) return
+  const area = $('psCropArea').clientWidth
+  const D = area * 0.875  // the ring: 87.5% of the square
+  const s = D / Math.min(ps.nw, ps.nh) * ps.z
+  const dw = ps.nw * s, dh = ps.nh * s
+  ps.ox = clamp(ps.ox, -(dw - D) / 2, (dw - D) / 2)
+  ps.oy = clamp(ps.oy, -(dh - D) / 2, (dh - D) / 2)
+  Object.assign(ps, { area, D, s, tx: area / 2 + ps.ox - dw / 2, ty: area / 2 + ps.oy - dh / 2 })
+  const img = $('psCropImg')
+  img.style.width = `${ps.nw}px`
+  img.style.height = `${ps.nh}px`
+  img.style.transform = `translate(${ps.tx}px, ${ps.ty}px) scale(${s})`
+}
+
+function setupCropGestures() {
+  const area = $('psCropArea')
+  const pts = new Map()
+  let g = null
+  const begin = () => {
+    const vals = [...pts.values()]
+    g = vals.length >= 2
+      ? { pinch: true, d0: Math.hypot(vals[0].x - vals[1].x, vals[0].y - vals[1].y) || 1, z0: ps.z }
+      : { x0: vals[0].x, y0: vals[0].y, ox: ps.ox, oy: ps.oy }
+  }
+  area.addEventListener('pointerdown', event => {
+    event.preventDefault()
+    try { area.setPointerCapture(event.pointerId) } catch { /* pointer already gone */ }
+    pts.set(event.pointerId, { x: event.clientX, y: event.clientY })
+    begin()
+  })
+  area.addEventListener('pointermove', event => {
+    if (!g || !pts.has(event.pointerId)) return
+    pts.set(event.pointerId, { x: event.clientX, y: event.clientY })
+    const vals = [...pts.values()]
+    if (g.pinch && vals.length >= 2) {
+      ps.z = clamp(g.z0 * Math.hypot(vals[0].x - vals[1].x, vals[0].y - vals[1].y) / g.d0, 1, 4)
+      $('psZoom').value = ps.z
+    } else if (!g.pinch) {
+      ps.ox = g.ox + event.clientX - g.x0
+      ps.oy = g.oy + event.clientY - g.y0
+    }
+    psApply()
+  })
+  const release = event => {
+    if (!pts.delete(event.pointerId)) return
+    if (pts.size) begin()
+    else g = null
+  }
+  area.addEventListener('pointerup', release)
+  area.addEventListener('pointercancel', release)
+  area.addEventListener('wheel', event => {
+    event.preventDefault()
+    ps.z = clamp(ps.z * Math.exp(-event.deltaY * 0.002), 1, 4)
+    $('psZoom').value = ps.z
+    psApply()
+  }, { passive: false })
+}
+
+async function psSave() {
+  const { s, tx, ty, D, area } = ps
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = 512
+  // the ring's square in the photo's own pixels
+  const sx = (area / 2 - D / 2 - tx) / s, sy = (area / 2 - D / 2 - ty) / s, side = D / s
+  canvas.getContext('2d').drawImage($('psCropImg'), sx, sy, side, side, 0, 0, 512, 512)
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9))
+  await psSaveBlob(blob)
+}
+
+async function psSaveBlob(blob) {
+  $('psSave').disabled = true
+  const form = new FormData()
+  form.append('file', blob, 'avatar.jpg')
+  try {
+    const res = await fetch('/api/profile/avatar', { method: 'POST', body: form })
+    if (res.status === 401 && state.config.auth) { location.href = '/login'; return }
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.detail || `${res.status} ${res.statusText}`)
+    state.profile = body
+    renderAvatarChip()
+    closeProfile()
+    $('status').textContent = 'profile photo saved'
+  } catch (err) {
+    alert(`Couldn't save your photo: ${err.message}`)
+  } finally {
+    $('psSave').disabled = false
+  }
 }
 
 init().catch(err => { $('status').textContent = err.message; console.error(err) })
