@@ -346,6 +346,10 @@ body.phone #boardViewport { border: 0; border-radius: 0; touch-action: none; }
 /* ☰ — Lucide align-justify, 27px at (32,73); rides inside the card */
 body.phone #menuBtn { display: grid; place-items: center; position: absolute; left: 24px; top: 65px; z-index: 30; width: 44px; height: 44px; padding: 0; border: 0; background: none; color: var(--menu-ink); }
 body.phone #menuBtn svg { width: 27px; height: 27px; stroke-width: 1.7778; }  /* 2px at 27px */
+/* hidden while the menu is open: fades out fast, and back in only once the card
+   has nearly landed (~70% through the 1.022 s spring) so it never pops mid-slide */
+body.phone #menuBtn { transition: opacity .25s ease .7s, visibility 0s linear .7s; }
+body.phone.drawer-open #menuBtn { opacity: 0; visibility: hidden; transition: opacity .12s ease, visibility 0s linear .12s; }
 body.phone.drawer-open #cardShield { display: block; position: absolute; inset: 0; z-index: 40; }
 
 /* the menu sits behind the card */
