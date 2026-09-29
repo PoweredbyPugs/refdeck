@@ -60,6 +60,17 @@ Mac mini (or anything else), serves any browser on your network.
 - Sidebar toggle (`F`), responsive down to narrow windows.
 - Full keyboard reference in Settings.
 
+### Phone & touch
+- **Phone layout** (≤700px): full-bleed gallery of the whole library with a
+  floating ☰. The menu slides in behind the gallery, which springs aside as a
+  rounded card (a physical spring via CSS `linear()`). It holds Upload, filters,
+  sort, collections, boards, theme and log out.
+- **Swipe preview** on any touch screen: ← → between files, ↓ back to the
+  gallery, pinch or double-tap to zoom, tap for the close/counter overlay,
+  long-press for the action menu. The back button closes the preview or menu.
+- Boards open full-screen on phones for viewing: one finger pans, pinch zooms.
+- **Light / dark / auto theme**: Settings, the palette, or the phone menu.
+
 ### Storage & mounts
 - Media roots are mounted **read-only**; RefDeck stores paths and a thumbnail
   cache, nothing else.
@@ -98,6 +109,7 @@ Environment variables:
 | `REFDECK_SECRET` | *(random per start)* | signs session cookies; set it so logins survive restarts |
 | `REFDECK_COOKIE_SECURE` | `1` | `0` only for plain-HTTP testing |
 | `REFDECK_BRAND` | *(none)* | name shown on the login page and wordmark |
+| `REFDECK_THEME` | `dark` | default theme, `light` / `dark` / `auto` (each device can override) |
 | `REFDECK_ALLOW_UPLOAD` | `0` | upload button + drag-in from the desktop |
 | `REFDECK_UPLOAD_MAX_MB` | `2048` | per-file upload cap |
 | `REFDECK_ALLOW_DELETE` | `1` | delete / move / restore |

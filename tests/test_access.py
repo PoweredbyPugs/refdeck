@@ -73,7 +73,8 @@ def test_auth_off_by_default(tmp_path, monkeypatch):
     assert client.get("/api/roots").status_code == 200
     assert client.get("/login", follow_redirects=False).status_code == 303
     config = client.get("/api/config").json()
-    assert config == {"brand": "", "auth": False, "upload": False, "delete": True, "mounts": True}
+    assert config == {"brand": "", "auth": False, "upload": False, "delete": True,
+                      "mounts": True, "theme": "dark"}
 
 
 def test_everything_locked_until_login(tmp_path, monkeypatch):
@@ -202,3 +203,24 @@ def test_mounts_off(tmp_path, monkeypatch):
     res = client.post("/api/mounts", json={"name": "X", "server": "h", "share": "s"})
     assert res.status_code == 403
     assert client.delete("/api/mounts/1").status_code == 403
+
+
+# ---------- theme ----------
+
+def test_theme_default_injected(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch, REFDECK_THEME="light")
+    assert client.get("/api/config").json()["theme"] == "light"
+    assert 'data-default-theme="light"' in client.get("/").text
+    assert "{{theme}}" not in client.get("/index.html").text
+
+
+def test_theme_rejects_junk(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch, REFDECK_THEME="<script>")
+    assert client.get("/api/config").json()["theme"] == "dark"
+    assert 'data-default-theme="dark"' in client.get("/").text
+
+
+def test_login_page_gets_theme(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch, **auth_env(REFDECK_THEME="light"))
+    assert 'data-default-theme="light"' in client.get("/login").text
+    assert client.get("/", follow_redirects=False).status_code == 303  # index still behind login

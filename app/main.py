@@ -119,6 +119,8 @@ def env_flag(name: str, default: bool) -> bool:
     return default if not raw else raw not in ("0", "false", "no", "off")
 
 
+THEMES = ("light", "dark", "auto")
+
 # reachable without a session: the login page and what a home-screen icon needs
 PUBLIC_PATHS = {"/login", "/favicon.svg", "/favicon-32.png", "/apple-touch-icon.png"}
 UPLOAD_CHUNK = 1024 * 1024
@@ -147,6 +149,8 @@ def create_app(mount_runner=None) -> FastAPI:
     # per-instance switches — defaults are the private LAN instance, unchanged
     auth = Auth.from_env()
     brand = os.environ.get("REFDECK_BRAND", "").strip()
+    theme = os.environ.get("REFDECK_THEME", "dark").strip().lower()
+    theme = theme if theme in THEMES else "dark"
     allow_upload = env_flag("REFDECK_ALLOW_UPLOAD", False)
     allow_delete = env_flag("REFDECK_ALLOW_DELETE", True)
     allow_mounts = env_flag("REFDECK_ALLOW_MOUNTS", True)
@@ -177,6 +181,7 @@ def create_app(mount_runner=None) -> FastAPI:
     def login_page(error: str = "", status: int = 200) -> HTMLResponse:
         page = (static / "login.html").read_text()
         page = page.replace("{{brand}}", html.escape(brand or "RefDeck"))
+        page = page.replace("{{theme}}", theme)
         page = page.replace("{{error}}", html.escape(error))
         return HTMLResponse(page, status_code=status)
 
@@ -212,7 +217,15 @@ def create_app(mount_runner=None) -> FastAPI:
     @app.get("/api/config")
     def api_config():
         return {"brand": brand, "auth": bool(auth), "upload": allow_upload,
-                "delete": allow_delete, "mounts": allow_mounts}
+                "delete": allow_delete, "mounts": allow_mounts, "theme": theme}
+
+    # the instance's default theme goes into the page itself, so the first
+    # paint is already the right colours (a stored per-device choice still wins)
+    @app.get("/")
+    @app.get("/index.html")
+    def index_page():
+        page = (static / "index.html").read_text().replace("{{theme}}", theme)
+        return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
 
     @app.on_event("startup")
     def startup():

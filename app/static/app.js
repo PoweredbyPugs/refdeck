@@ -42,6 +42,8 @@ const state = {
   filter: '',
   sort: 'name',
   collections: [],
+  boards: [],
+  drawerRows: [],
   collectionId: null,
   pickItem: null,
   currentBoard: { id: null, title: 'Untitled board', document: { items: [], viewport: { x: 0, y: 0, scale: 1 } } },
@@ -79,6 +81,9 @@ async function api(path, opts) {
 async function init() {
   state.config = await api('/api/config')
   applyConfig()
+  applyTheme()
+  document.querySelectorAll('[data-theme-pick]').forEach(b => b.onclick = () => setTheme(b.dataset.themePick))
+  setupPhone()
   await refreshRoots()
   $('tree').onclick = event => {
     const row = event.target.closest('.trow')
@@ -345,6 +350,10 @@ async function init() {
     if (state.pv360) { event.preventDefault(); pv360Destroy() }
   })
   $('preview').addEventListener('close', () => {
+    $('previewBody').style.transform = ''
+    $('previewBody').style.opacity = ''
+    $('preview').style.setProperty('--pv-bg', 1)
+    popLayer('preview')
     pv360Destroy()
     $('previewBody').innerHTML = ''  // removes any <video>, stopping playback
     state.previewIndex = null
@@ -359,6 +368,7 @@ async function init() {
     menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8) + 'px'
   })
   $('preview').addEventListener('click', event => {
+    if (performance.now() - (state.pvMenuAt || 0) < 500) return  // the long-press that opened it
     if (!event.target.closest('#pvMenu')) $('pvMenu').hidden = true
   })
   $('pvMenu').onclick = event => {
@@ -430,6 +440,7 @@ async function init() {
 }
 
 function handleKeys(event) {
+  if (event.key === 'Escape' && document.body.classList.contains('drawer-open')) { closeDrawer(); return }
   if (event.target.closest('input, textarea, select, dialog')) return
   const key = event.key.toLowerCase()
   const mod = event.metaKey || event.ctrlKey || event.altKey
@@ -1077,7 +1088,12 @@ function renderPreview(item) {
       media.addEventListener('load', update)
     }
   }
-  if (!$('preview').open) $('preview').showModal()
+  if (!$('preview').open) {
+    $('preview').classList.remove('chrome-off')
+    $('preview').showModal()
+    pushLayer('preview')
+  }
+  pvTouchSync()
 }
 
 function pvToggleLoop() {
@@ -1500,15 +1516,9 @@ function itemFromCollection(item) {
 
 async function loadBoards() {
   const boards = await api('/api/boards')
+  state.boards = boards
   $('boards').innerHTML = boards.map(b => `<div class="row" data-boardid="${b.id}"><button class="mini" data-delboard="${b.id}">✕</button>${h(b.title)}</div>`).join('')
-  document.querySelectorAll('[data-boardid]').forEach(row => row.onclick = async () => {
-    state.currentBoard = await api(`/api/boards/${row.dataset.boardid}`)
-    const viewport = state.currentBoard.document.viewport || { x: 0, y: 0, scale: 1 }
-    setCanvas(viewport.x || 0, viewport.y || 0, viewport.scale || 1)
-    state.selectedBoard.clear()
-    renderBoard()
-    resetBoardHistory()
-  })
+  document.querySelectorAll('[data-boardid]').forEach(row => row.onclick = () => openBoard(+row.dataset.boardid))
   document.querySelectorAll('[data-delboard]').forEach(b => b.onclick = async event => {
     event.stopPropagation()
     if (!confirm('Delete this board?')) return
@@ -1516,6 +1526,15 @@ async function loadBoards() {
     if (state.currentBoard.id === +b.dataset.delboard) $('newBoard').click()
     await loadBoards()
   })
+}
+
+async function openBoard(id) {
+  state.currentBoard = await api(`/api/boards/${id}`)
+  const viewport = state.currentBoard.document.viewport || { x: 0, y: 0, scale: 1 }
+  setCanvas(viewport.x || 0, viewport.y || 0, viewport.scale || 1)
+  state.selectedBoard.clear()
+  renderBoard()
+  resetBoardHistory()
 }
 
 async function openSettings() {
@@ -2274,6 +2293,7 @@ function buildCommands() {
   add('Board: delete selection', deleteSelectedBoardItem, '⌫')
   add('New collection', newCollection)
   add('Open settings', openSettings)
+  for (const t of ['light', 'dark', 'auto']) add(`Theme: ${t}`, () => setTheme(t))
   if (state.config.upload) add('Upload photos into this folder…', () => $('uploadInput').click())
   if (state.config.auth) add('Log out', logout)
   for (const r of state.roots) {
@@ -2332,6 +2352,386 @@ function runPalette(index) {
   const cmd = state.palItems[index]
   closePalette()
   if (cmd) cmd.run()
+}
+
+// ---------- theme: light / dark / auto — this device's choice, else the instance default ----------
+
+const THEMES = ['light', 'dark', 'auto']
+const lightMQ = matchMedia('(prefers-color-scheme: light)')
+
+function themeChoice() {
+  let t = ''
+  try { t = localStorage.getItem('refdeck.theme') || '' } catch { /* private mode */ }
+  if (THEMES.includes(t)) return t
+  return THEMES.includes(state.config.theme) ? state.config.theme : 'dark'
+}
+
+function applyTheme() {
+  const choice = themeChoice()
+  const theme = choice === 'auto' ? (lightMQ.matches ? 'light' : 'dark') : choice
+  document.documentElement.dataset.theme = theme
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg0').trim()
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg || '#0b0c0f')
+  document.querySelectorAll('[data-theme-pick]').forEach(b => b.classList.toggle('active', b.dataset.themePick === choice))
+}
+
+function setTheme(choice) {
+  try { localStorage.setItem('refdeck.theme', choice) } catch { /* private mode: session only */ }
+  applyTheme()
+}
+
+lightMQ.addEventListener('change', () => { if (themeChoice() === 'auto') applyTheme() })
+
+// ---------- phone layout: full-bleed gallery + slide-out menu (design prototype) ----------
+
+const phoneMQ = matchMedia('(max-width: 700px)')
+const coarseMQ = matchMedia('(pointer: coarse)')
+const isPhone = () => document.body.classList.contains('phone')
+
+function setupPhone() {
+  const apply = () => {
+    const was = isPhone()
+    document.body.classList.toggle('phone', phoneMQ.matches)
+    document.body.classList.toggle('touch', phoneMQ.matches || coarseMQ.matches)
+    if (!phoneMQ.matches) closeDrawer()
+    if (phoneMQ.matches && !was) {
+      // phones open on the whole library as one gallery; session-only, so
+      // the desktop's saved view/drill preferences are left alone
+      state.view = 'masonry'
+      syncViewButtons()
+      if (!state.path) state.drill = true
+      if (state.root) resetGrid()
+    }
+  }
+  apply()
+  phoneMQ.addEventListener('change', apply)
+  coarseMQ.addEventListener('change', apply)
+  $('menuBtn').onclick = openDrawer
+  $('drawerClose').onclick = closeDrawer
+  $('cardShield').onclick = closeDrawer
+  $('drawer').onclick = event => {
+    const button = event.target.closest('[data-dr]')
+    if (!button) return
+    const row = state.drawerRows[+button.dataset.dr]
+    if (!row) return
+    row.run()  // synchronous first: Upload must open the picker inside the tap
+    if (!row.keepOpen) closeDrawer()
+  }
+  $('pvClose').onclick = () => $('preview').close()
+  setupToast()
+  setupPreviewTouch()
+  setupBoardTouch()
+}
+
+function drawerRows() {
+  const top = [], bottom = []
+  const inCanvas = state.mode === 'canvas'
+  const gallery = !state.collectionId && !inCanvas
+  if (state.config.upload) top.push({ icon: 'upload', label: 'Upload photos', cls: 'outline', run: () => $('uploadInput').click() })
+  top.push({ icon: 'images', label: 'All photos', active: gallery && !state.typeFilter, run: () => showGallery('') })
+  top.push({ icon: 'image', label: 'Photos only', active: gallery && state.typeFilter === 'image', run: () => showGallery('image') })
+  top.push({ icon: 'video', label: 'Videos only', active: gallery && state.typeFilter === 'video', run: () => showGallery('video') })
+  const newest = state.sort === 'date'
+  top.push({ icon: newest ? 'arrow-down-wide-narrow' : 'arrow-down-a-z', label: newest ? 'Newest first' : 'Sorted by name',
+             run: () => setSort(newest ? 'name' : 'date') })
+  for (const c of state.collections) {
+    top.push({ icon: 'bookmark', label: c.title, active: !inCanvas && state.collectionId === c.id,
+               run: () => { if (inCanvas) setMode('split'); openCollection(c.id) } })
+  }
+  for (const b of state.boards) {
+    top.push({ icon: 'layout-dashboard', label: b.title, active: inCanvas && state.currentBoard.id === b.id,
+               run: () => { setMode('canvas'); openBoard(b.id) } })
+  }
+  const choice = themeChoice()
+  const next = { light: 'dark', dark: 'auto', auto: 'light' }[choice]
+  bottom.push({ icon: { light: 'sun', dark: 'moon', auto: 'sun-moon' }[choice], label: `Theme: ${choice[0].toUpperCase()}${choice.slice(1)}`,
+                keepOpen: true, run: () => { setTheme(next); renderDrawer() } })
+  if (state.config.auth) bottom.push({ icon: 'log-out', label: 'Log out', run: logout })
+  return { top, bottom }
+}
+
+function renderDrawer() {
+  const { top, bottom } = drawerRows()
+  state.drawerRows = [...top, ...bottom]
+  let i = 0
+  // --i drives each row's start offset: (244 + 50·i)px off-screen, as in the design prototype
+  const rows = list => list.map(r => {
+    const idx = i++
+    return `<button class="dRow ${r.active ? 'active' : ''} ${r.cls || ''}" style="--i:${idx}" data-dr="${idx}">` +
+      `<svg><use href="#i-${r.icon}"/></svg><span>${h(r.label)}</span></button>`
+  }).join('')
+  $('drawerList').innerHTML = rows(top)
+  $('drawerBottom').innerHTML = rows(bottom)
+  $('drawerAvatar').title = state.config.brand || ''
+}
+
+function openDrawer() {
+  if (document.body.classList.contains('drawer-open')) return
+  renderDrawer()
+  $('drawerList').scrollTop = 0
+  $('drawer').inert = false
+  void $('drawer').offsetWidth  // commit the closed positions so every row springs in
+  document.body.classList.add('drawer-open')
+  $('menuBtn').setAttribute('aria-expanded', 'true')
+  pushLayer('drawer')
+}
+
+function closeDrawer() {
+  if (!document.body.classList.contains('drawer-open')) return
+  document.body.classList.remove('drawer-open')
+  $('drawer').inert = true
+  $('menuBtn').setAttribute('aria-expanded', 'false')
+  popLayer('drawer')
+}
+
+async function showGallery(type) {
+  if (state.mode === 'canvas') setMode('split')
+  state.collectionId = null
+  renderCollections()
+  if (isPhone()) {
+    state.drill = true
+    if (state.path) { state.path = ''; if (state.typeFilter === type) return browse() }
+  }
+  if (state.typeFilter !== type) setTypeFilter(type)  // resets the grid itself
+  else await resetGrid()
+}
+
+// back button / back-swipe closes the menu or preview instead of leaving the app
+let popGuard = false
+function pushLayer(name) {
+  if (document.body.classList.contains('touch')) history.pushState({ refdeckLayer: name }, '')
+}
+function popLayer(name) {
+  if (history.state?.refdeckLayer !== name) return
+  popGuard = true
+  history.back()
+}
+window.addEventListener('popstate', () => {
+  if (popGuard) { popGuard = false; return }
+  if ($('preview').open) $('preview').close()
+  else closeDrawer()
+})
+
+// phones hide #status, so upload progress and failures surface as a toast
+function setupToast() {
+  let timer
+  new MutationObserver(() => {
+    if (!isPhone()) return
+    const text = $('status').textContent
+    if (!/^(upload|deleted|moved)|fail|error/i.test(text)) return
+    $('toast').textContent = text
+    $('toast').classList.add('show')
+    clearTimeout(timer)
+    timer = setTimeout(() => $('toast').classList.remove('show'), /^uploading/.test(text) ? 4000 : 2600)
+  }).observe($('status'), { childList: true, characterData: true, subtree: true })
+}
+
+// ---------- preview on touch: swipe ← → between files, swipe ↓ back to the gallery ----------
+
+function pvHasNeighbor(direction) {
+  const i = state.previewIndex
+  if (i === null) return false
+  for (let n = i + direction; n >= 0 && n < state.gridFiles.length; n += direction) {
+    if (state.gridFiles[n]) return true
+  }
+  return direction > 0 && state.gridFiles.length < state.gridTotal
+}
+
+function pvTouchSync() {
+  const i = state.previewIndex
+  if (i === null) { $('pvCount').textContent = ''; return }
+  const total = Math.max(state.gridTotal || 0, state.gridFiles.length)
+  $('pvCount').textContent = `${i + 1} / ${total}`
+  for (const n of [i - 1, i + 1]) {  // neighbours ready before the swipe lands
+    const f = state.gridFiles[n]
+    if (f && normalizeExplorerItem(f).media_type === 'image') new Image().src = previewUrl(normalizeExplorerItem(f))
+  }
+}
+
+function openPvMenuAt(x, y) {
+  const menu = $('pvMenu')
+  menu.hidden = false
+  menu.style.left = Math.min(x, window.innerWidth - menu.offsetWidth - 8) + 'px'
+  menu.style.top = Math.min(y, window.innerHeight - menu.offsetHeight - 8) + 'px'
+  state.pvMenuAt = performance.now()
+}
+
+function setupPreviewTouch() {
+  const body = $('previewBody')
+  const dlg = $('preview')
+  const pts = new Map()
+  let g = null, lastTap = null, tapTimer = null, pressTimer = null
+  const setBg = v => dlg.style.setProperty('--pv-bg', v)
+  const reset = () => { body.style.transform = ''; body.style.opacity = ''; setBg(1) }
+  const snap = (transform, done) => {
+    body.classList.add('pvSnap')
+    body.style.transform = transform
+    let finished = false
+    const end = () => {
+      if (finished) return
+      finished = true
+      body.classList.remove('pvSnap')
+      done?.()
+    }
+    body.addEventListener('transitionend', end, { once: true })
+    setTimeout(end, 320)
+  }
+  const oneFinger = (x, y) => ({ x0: x, y0: y, t0: performance.now(), axis: null, dx: 0, dy: 0, moved: false,
+                                 zoomed: state.pv.scale > 1.01, px: state.pv.x, py: state.pv.y })
+
+  body.addEventListener('pointerdown', event => {
+    if (event.pointerType !== 'touch' || state.pv360) return
+    const rect = body.getBoundingClientRect()
+    // a video's own control bar keeps its touches
+    if (pvMedia()?.tagName === 'VIDEO' && state.pv.scale <= 1.01 && event.clientY > rect.bottom - 72) return
+    event.preventDefault()
+    try { body.setPointerCapture(event.pointerId) } catch { /* pointer already gone */ }
+    pts.set(event.pointerId, { x: event.clientX, y: event.clientY })
+    clearTimeout(pressTimer)
+    if (pts.size === 1) {
+      g = oneFinger(event.clientX, event.clientY)
+      pressTimer = setTimeout(() => {
+        if (g && !g.moved && pts.size === 1) { g.longPress = true; openPvMenuAt(g.x0, g.y0) }
+      }, 500)
+    } else if (pts.size === 2) {
+      const [a, b] = [...pts.values()]
+      g = { pinch: true, d: Math.hypot(a.x - b.x, a.y - b.y) }
+      reset()  // a second finger abandons any swipe in flight
+    }
+  })
+
+  body.addEventListener('pointermove', event => {
+    if (!g || !pts.has(event.pointerId)) return
+    pts.set(event.pointerId, { x: event.clientX, y: event.clientY })
+    if (g.pinch) {
+      if (pts.size < 2) return
+      const [a, b] = [...pts.values()]
+      const d = Math.hypot(a.x - b.x, a.y - b.y)
+      if (g.d > 0) pvZoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / g.d)
+      g.d = d
+      return
+    }
+    const dx = event.clientX - g.x0, dy = event.clientY - g.y0
+    if (!g.moved && Math.hypot(dx, dy) < 10) return
+    g.moved = true
+    clearTimeout(pressTimer)
+    if (g.zoomed) {  // zoomed in: one finger pans the image, no swiping
+      state.pv.x = g.px + dx
+      state.pv.y = g.py + dy
+      pvApply()
+      return
+    }
+    if (!g.axis) g.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : (dy > 0 ? 'y' : 'none')
+    if (g.axis === 'x') {
+      const blocked = !pvHasNeighbor(dx < 0 ? 1 : -1)
+      g.dx = blocked ? dx / 3 : dx  // rubber-band past the first / last file
+      body.style.transform = `translateX(${g.dx}px)`
+    } else if (g.axis === 'y') {
+      g.dy = Math.max(0, dy)
+      const p = Math.min(1, g.dy / body.clientHeight)
+      body.style.transform = `translateY(${g.dy}px) scale(${1 - p * 0.25})`
+      setBg(1 - p)
+    }
+  })
+
+  const release = event => {
+    if (!pts.has(event.pointerId)) return
+    pts.delete(event.pointerId)
+    clearTimeout(pressTimer)
+    if (!g) return
+    if (g.pinch) {
+      if (pts.size) { const [p] = pts.values(); g = { ...oneFinger(p.x, p.y), moved: true } }
+      else { if (state.pv.scale < 1) pvResetZoom(); g = null }
+      return
+    }
+    if (pts.size) return
+    const cur = g
+    g = null
+    if (cur.longPress) return
+    if (!cur.moved) { tap(event.clientX, event.clientY); return }
+    if (cur.zoomed) return
+    const dt = Math.max(1, performance.now() - cur.t0)
+    const W = body.clientWidth, H = body.clientHeight
+    if (cur.axis === 'x') {
+      const direction = cur.dx < 0 ? 1 : -1
+      const flick = Math.abs(cur.dx) / dt > 0.5
+      if ((Math.abs(cur.dx) > W * 0.25 || flick) && pvHasNeighbor(direction)) {
+        snap(`translateX(${-direction * W}px)`, async () => {
+          body.style.transform = `translateX(${direction * W}px)`  // next file enters from the far side
+          await previewNav(direction)
+          requestAnimationFrame(() => snap('translateX(0)', reset))
+        })
+      } else snap('translateX(0)', reset)
+    } else if (cur.axis === 'y') {
+      if (cur.dy > 120 || cur.dy / dt > 0.5) {
+        body.style.opacity = '0'
+        setBg(0)
+        snap(`translateY(${H}px) scale(.75)`, () => { dlg.close(); reset() })
+      } else { setBg(1); snap('translateX(0)', reset) }
+    }
+  }
+  body.addEventListener('pointerup', release)
+  body.addEventListener('pointercancel', release)
+
+  function tap(x, y) {
+    const now = performance.now()
+    if (lastTap && now - lastTap.t < 300 && Math.hypot(x - lastTap.x, y - lastTap.y) < 30) {
+      lastTap = null
+      clearTimeout(tapTimer)
+      if (state.pv.scale > 1.01) pvResetZoom()
+      else pvZoomAt(x, y, 2.5)
+      return
+    }
+    lastTap = { t: now, x, y }
+    tapTimer = setTimeout(() => dlg.classList.toggle('chrome-off'), 300)  // single tap: show / hide ✕ + counter
+  }
+}
+
+// ---------- boards on touch: one finger pans, two fingers zoom (viewing only) ----------
+
+function setupBoardTouch() {
+  const viewport = $('boardViewport')
+  const pts = new Map()
+  let g = null
+  const start = () => {
+    const vals = [...pts.values()]
+    if (vals.length === 1) { g = { x0: vals[0].x, y0: vals[0].y, cx: state.canvas.x, cy: state.canvas.y }; return }
+    const [a, b] = vals
+    const rect = viewport.getBoundingClientRect()
+    const mx = (a.x + b.x) / 2 - rect.left, my = (a.y + b.y) / 2 - rect.top
+    const s0 = state.canvas.scale
+    // the board point under the fingers' midpoint stays under it
+    g = { pinch: true, d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, s0,
+          wx: (mx - state.canvas.x) / s0, wy: (my - state.canvas.y) / s0, rect }
+  }
+  viewport.addEventListener('pointerdown', event => {
+    if (event.pointerType !== 'touch' || !isPhone()) return
+    event.preventDefault()
+    event.stopPropagation()
+    try { viewport.setPointerCapture(event.pointerId) } catch { /* pointer already gone */ }
+    pts.set(event.pointerId, { x: event.clientX, y: event.clientY })
+    start()
+  }, true)
+  viewport.addEventListener('pointermove', event => {
+    if (!g || !pts.has(event.pointerId)) return
+    pts.set(event.pointerId, { x: event.clientX, y: event.clientY })
+    const vals = [...pts.values()]
+    if (g.pinch && vals.length >= 2) {
+      const [a, b] = vals
+      const s = clamp(g.s0 * Math.hypot(a.x - b.x, a.y - b.y) / g.d0, 0.1, 10)
+      const mx = (a.x + b.x) / 2 - g.rect.left, my = (a.y + b.y) / 2 - g.rect.top
+      setCanvas(mx - g.wx * s, my - g.wy * s, s)
+    } else if (!g.pinch) {
+      setCanvas(g.cx + event.clientX - g.x0, g.cy + event.clientY - g.y0, state.canvas.scale)
+    }
+  }, true)
+  const release = event => {
+    if (!pts.delete(event.pointerId)) return
+    if (pts.size) start()
+    else g = null
+  }
+  viewport.addEventListener('pointerup', release, true)
+  viewport.addEventListener('pointercancel', release, true)
 }
 
 init().catch(err => { $('status').textContent = err.message; console.error(err) })
