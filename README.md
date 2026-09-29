@@ -6,7 +6,9 @@ video becomes instantly browsable, searchable, and droppable onto an infinite
 canvas — originals never move, never get copied, never get "imported."
 
 Built with FastAPI + SQLite + dependency-free vanilla JS. Runs in Docker on a
-Mac mini (or anything else), serves any browser on your network.
+Mac mini (or anything else), serves any browser on your network — and, with
+the login and permission switches below, can safely hand one folder to a
+client over the internet, phone-first.
 
 ## Features
 
@@ -124,16 +126,47 @@ pre-generation (it pauses below 2 GB free disk and resumes on demand).
 The first depth-map request downloads the ~100 MB ONNX model into
 `data/models`; generated maps are cached in `data/depth`.
 
+## Sharing an instance beyond your LAN
+
+Run a **second, separate instance** for anyone outside your network (a
+client, a collaborator) instead of opening up your own:
+
+- Its own compose project and `data/` folder (own index, boards, profile).
+- `REFDECK_ROOTS` pointing at **only** the folder you're sharing; mount just
+  that subfolder (e.g. a Docker `nfs` volume with a subpath `device`).
+- Login on: `REFDECK_AUTH_USER`, `REFDECK_AUTH_HASH`
+  (`python -m app.auth`), `REFDECK_SECRET`. The hash uses `:` separators,
+  so it survives compose's `$` interpolation in `.env`.
+- Least privilege: `REFDECK_ALLOW_UPLOAD=1` if they should add files,
+  `REFDECK_ALLOW_DELETE=0`, `REFDECK_ALLOW_MOUNTS=0`; no `cap_add`, and
+  `cap_drop: [ALL]` works. Set `TMPDIR` inside `data/` so large uploads
+  don't spool onto a small system disk.
+- **No published ports.** Serve it through an HTTPS tunnel instead — for
+  example a Tailscale sidecar container with Funnel on 443 and RefDeck on
+  `network_mode: service:<sidecar>`, or a Cloudflare Tunnel. The session
+  cookie is `Secure`, so plain HTTP won't log in.
+- **Lock down outbound traffic.** On Docker Desktop (macOS/Windows) a
+  container's outbound traffic leaves through the host, so it can reach
+  your LAN and any VPN the host is on — ACLs on a sidecar's own identity
+  don't apply to it. Reject private, CGNAT and link-local ranges
+  (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `169.254/16`) in the
+  shared network namespace, e.g. with `iptables` in the sidecar's
+  entrypoint before it starts (`NET_ADMIN` on the sidecar only). Network
+  volumes are mounted by the Docker VM, outside that namespace, so they
+  keep working.
+- `REFDECK_BRAND` and `REFDECK_THEME` make it feel like theirs.
+
 ## Development
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m pytest tests/ -q          # 30 tests
+.venv/bin/python -m pytest tests/ -q          # 96 tests
 REFDECK_ROOTS="Media=/path/to/media" .venv/bin/uvicorn app.main:app --port 8788
 ```
 
 Layout: `app/media.py` (roots + traversal safety) · `app/indexer.py` (scanner)
+· `app/auth.py` (optional login)
 · `app/db.py` (SQLite) · `app/thumbs.py` (thumbnails/previews) ·
 `app/depth.py` (depth maps) · `app/mounts.py` (SMB) · `app/main.py` (API) ·
 `app/static/` (UI).
@@ -144,7 +177,9 @@ Layout: `app/media.py` (roots + traversal safety) · `app/indexer.py` (scanner)
 `GET /api/files?root&path&recursive&query&sort&type&exts&limit&offset` ·
 `GET /api/thumb|preview|media|depth?root&path` · `POST /api/scan/{root}` ·
 `GET /api/scan/status` · CRUD on `/api/collections`, `/api/boards`,
-`/api/mounts`.
+`/api/mounts` · `POST /api/upload?root&path` (multipart) ·
+`GET|POST|DELETE /api/profile/avatar` · `GET /api/config` (which switches
+are on) · `GET|POST /login`, `POST /logout`.
 
 ## Notes
 
